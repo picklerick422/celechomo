@@ -1,0 +1,32 @@
+{
+  "color": [
+    { "name": "start_window_background", "value": "#000000" },
+    { "name": "app_primary", "value": "#0A84FF" },
+    { "name": "app_background", "value": "#000000" },
+    { "name": "card_background", "value": "#1C1C1E" },
+    { "name": "text_primary", "value": "#FFFFFF" },
+    { "name": "text_secondary", "value": "#EBEBF5" },
+    { "name": "text_tertiary", "value": "#636366" },
+    { "name": "separator", "value": "#38383A" },
+    { "name": "tab_bar_bg", "value": "#1C1C1E" },
+    { "name": "color_cyan", "value": "#01D7F0" },
+    { "name": "color_peach", "value": "#FF9E7A" },
+    { "name": "color_spring", "value": "#44E749" },
+    { "name": "color_sakura", "value": "#FF6BA3" },
+    { "name": "color_sand", "value": "#FFB84D" },
+    { "name": "color_magenta", "value": "#BF5AF2" },
+    { "name": "color_ok_green", "value": "#30D158" },
+    { "name": "color_red", "value": "#FF453A" },
+    { "name": "color_orange", "value": "#FF9F0A" },
+    { "name": "color_blue", "value": "#0A84FF" },
+    { "name": "color_indigo", "value": "#5E5CE6" },
+    { "name": "color_teal", "value": "#64D2FF" },
+    { "name": "shadow_color", "value": "#00000000" },
+    { "name": "progress_bg", "value": "#3A3A3C" },
+    { "name": "selected_day_bg", "value": "#3C0A84FF" },
+    { "name": "today_bg", "value": "#3C636366" },
+    { "name": "swipe_green", "value": "#30D158" },
+    { "name": "swipe_red", "value": "#FF453A" },
+    { "name": "swipe_orange", "value": "#FF9F0A" }
+  ]
+}

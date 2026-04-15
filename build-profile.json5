@@ -1,0 +1,56 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "material": {
+          "storePassword": "000000200BD9C847400C994330342A20F373542917D10BF8F30AD72A109E74A65E8E88C0D494926772C318A17BB97947",
+          "certpath": "/storage/Users/currentUser/appdata/el2/base/com.huawei.devecostudio/files/ohos/config/default_Celechomo_nextm-Ni3sv4DyJVB3YVtgL7D5F0oD0yxZxwXMwk5yyD4_I.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "000000200BD9C847400C994330342A20F373542917D10BF8F30AD72A109E74A65E8E88C0D494926772C318A17BB97947",
+          "profile": "/storage/Users/currentUser/appdata/el2/base/com.huawei.devecostudio/files/ohos/config/default_Celechomo_nextm-Ni3sv4DyJVB3YVtgL7D5F0oD0yxZxwXMwk5yyD4_I.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/storage/Users/currentUser/appdata/el2/base/com.huawei.devecostudio/files/ohos/config/default_Celechomo_nextm-Ni3sv4DyJVB3YVtgL7D5F0oD0yxZxwXMwk5yyD4_I.p12"
+        },
+        "type": "HarmonyOS"
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.0.2(22)",
+        "compatibleSdkVersion": "6.0.2(22)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

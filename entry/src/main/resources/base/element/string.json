@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Celechron 学业管理助手"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Celechron 鸿蒙版 - 学业管理助手"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Celechron"
+    },
+    {
+      "name": "app_name",
+      "value": "Celechron"
+    }
+  ]
+}
