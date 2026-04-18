@@ -6,7 +6,7 @@ import { Period } from '../model/Period';
 import { Semester, TimeRange } from '../model/Semester';
 import { StorageService } from '../service/StorageService';
 import { generateFlowList } from '../service/FlowService';
-import { setCookies, checkUpdate, setStudentId } from '../service/NetworkService';
+import { setCookies, checkUpdate, setStudentId, setCachedStudentInfo, StudentInfo } from '../service/NetworkService';
 import { FlowPage } from './flow/FlowPage';
 import { CalendarPage } from './calendar/CalendarPage';
 import { TaskPage } from './task/TaskPage';
@@ -48,6 +48,7 @@ export const AppKeys: Record<string, string> = {
   "COURSE_MAPPING": 'courseMapping',
   "LATEST_VERSION": 'latestVersion',
   "APP_VERSION": 'appVersion',
+  "STUDENT_INFO": 'studentInfo',
   "topRectHeight": 'topRectHeight',
   "bottomRectHeight": 'bottomRectHeight'
 };
@@ -127,6 +128,7 @@ struct Index {
     AppStorage.setOrCreate(AppKeys.COURSE_MAPPING, {} as Record<string, string>);
     AppStorage.setOrCreate(AppKeys.LATEST_VERSION, '');
     AppStorage.setOrCreate(AppKeys.APP_VERSION, CURRENT_VERSION);
+    AppStorage.setOrCreate(AppKeys.STUDENT_INFO, '');
     AppStorage.setOrCreate('semesterIndex', 0);
     AppStorage.setOrCreate('topRectHeight', 0);
     AppStorage.setOrCreate('bottomRectHeight', 0);
@@ -164,7 +166,8 @@ struct Index {
       this.storageService.loadIsGrs(),
       this.storageService.loadUsername(),
       this.storageService.loadLastUpdate(),
-      this.storageService.loadString('cookies', '')
+      this.storageService.loadString('cookies', ''),
+      this.storageService.loadString('student_info', '')
     ]);
 
     const tasks = results[0];
@@ -178,6 +181,7 @@ struct Index {
     const username = results[8];
     const lastUpdate = results[9];
     const cookies = results[10];
+    const studentInfoStr = results[11] as string;
 
     AppStorage.set(AppKeys.TASKS, tasks);
     AppStorage.set(AppKeys.SEMESTERS, semesters);
@@ -195,6 +199,16 @@ struct Index {
     // 恢复学号到 NetworkService（避免重启后 savedStudentId 为空）
     if (username.length > 0 && username !== 'web_user') {
       setStudentId(username);
+    }
+    // 恢复学生信息缓存
+    if (studentInfoStr.length > 0) {
+      try {
+        const studentInfo = JSON.parse(studentInfoStr) as StudentInfo;
+        setCachedStudentInfo(studentInfo);
+        AppStorage.set(AppKeys.STUDENT_INFO, studentInfoStr);
+      } catch {
+        console.warn('[Index] Failed to parse cached student info');
+      }
     }
     // 重建 flowList
     this.rebuildFlowList(tasks, semesters,

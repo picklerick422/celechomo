@@ -1,17 +1,19 @@
-// DiagnosticPage.ets - 数据获取诊断页面（调试用）
+// DiagnosticPage.ets - 数据获取诊断页面（升级版）
 
 import { pasteboard } from '@kit.BasicServicesKit';
 import http from '@ohos.net.http';
 import {
   getCookies, getStudentId, isLoggedIn,
   fetchSemesters, fetchGrades, fetchCourseSchedule, fetchExams,
-  fetchStudentInfo, fetchRaw, fetchRawGet,
-  JW_BASE
+  fetchStudentInfo,
+  getCachedStudentInfo, StudentInfo,
+  JW_BASE, CAS_BASE
 } from '../../service/NetworkService';
 import { AppKeys } from '../Index';
 import { Semester } from '../../model/Semester';
 
 type LogLevel = 'INFO' | 'OK' | 'WARN' | 'ERR';
+type TestStatus = 'idle' | 'running' | 'success' | 'error' | 'timeout' | 'warn';
 
 interface LogEntry {
   time: string;
@@ -19,14 +21,29 @@ interface LogEntry {
   msg: string;
 }
 
+interface TestResult {
+  label: string;
+  status: TestStatus;
+  detail: string;
+  duration: number;
+}
+
+interface UrlTestItem {
+  url: string;
+  name: string;
+}
+
 @Component
 export struct DiagnosticPage {
-  private pathStack: NavPathStack = new NavPathStack();
   @State logs: LogEntry[] = [];
   @State isTesting: boolean = false;
+  @State testResults: TestResult[] = [];
+  @State overallStatus: string = '';
+  @State overallColor: string = '#8E8E93';
   @StorageLink(AppKeys.USERNAME) username: string = '';
   @StorageLink(AppKeys.IS_LOGGED_IN) isLoggedIn_: boolean = false;
   @StorageLink(AppKeys.SEMESTERS) semesters: Semester[] = [];
+  @StorageLink(AppKeys.STUDENT_INFO) studentInfoStr: string = '';
   private scroller: Scroller = new Scroller();
 
   private now(): string {
@@ -37,7 +54,6 @@ export struct DiagnosticPage {
 
   private log(level: LogLevel, msg: string): void {
     this.logs = [...this.logs, { time: this.now(), level, msg }];
-    // 滚动到底部
     setTimeout(() => {
       try { this.scroller.scrollEdge(Edge.Bottom); } catch {}
     }, 50);
@@ -45,6 +61,9 @@ export struct DiagnosticPage {
 
   private clearLogs(): void {
     this.logs = [];
+    this.testResults = [];
+    this.overallStatus = '';
+    this.overallColor = '#8E8E93';
   }
 
   private async copyLogs(): Promise<void> {
@@ -58,6 +77,38 @@ export struct DiagnosticPage {
       this.log('OK', '日志已复制到剪贴板');
     } catch (e) {
       this.log('ERR', `复制失败: ${(e as Error).message}`);
+    }
+  }
+
+  private addTestResult(label: string, status: TestStatus, detail: string, duration: number = 0): void {
+    const existing = this.testResults.findIndex(r => r.label === label);
+    const result: TestResult = { label, status, detail, duration };
+    if (existing >= 0) {
+      this.testResults[existing] = result;
+      this.testResults = [...this.testResults];
+    } else {
+      this.testResults = [...this.testResults, result];
+    }
+  }
+
+  private getStatusIcon(status: TestStatus): string {
+    switch (status) {
+      case 'success': return '✓';
+      case 'error': return '✕';
+      case 'timeout': return '⏱';
+      case 'running': return '⟳';
+      default: return '○';
+    }
+  }
+
+  private getStatusColor(status: TestStatus): string {
+    switch (status) {
+      case 'success': return '#34C759';
+      case 'error': return '#FF3B30';
+      case 'timeout': return '#FF9500';
+      case 'warn': return '#FF9500';
+      case 'running': return '#007AFF';
+      default: return '#8E8E93';
     }
   }
 
@@ -76,6 +127,7 @@ export struct DiagnosticPage {
     const cookies = getCookies();
     if (cookies.length === 0) {
       this.log('ERR', 'Cookies: (空！未登录或未恢复)');
+      this.addTestResult('登录状态', 'error', '未获取到 Cookie', 0);
     } else {
       this.log('OK', `Cookies 长度: ${cookies.length} 字节`);
       const hasJSession = cookies.includes('JSESSIONID');
@@ -84,12 +136,46 @@ export struct DiagnosticPage {
       this.log(hasJSession ? 'OK' : 'WARN', `  JSESSIONID: ${hasJSession ? '存在' : '缺失'}`);
       this.log(hasRoute ? 'OK' : 'WARN',    `  route: ${hasRoute ? '存在' : '缺失'}`);
       this.log(hasCas ? 'OK' : 'INFO',      `  iPlanetDirectoryPro: ${hasCas ? '存在' : '无(正常)'}`);
+
+      // 判断登录方式
+      if (hasCas) {
+        this.log('INFO', '  登录方式: 网页统一认证 (Cookie 完整)');
+        this.addTestResult('登录状态', 'success', '网页统一认证登录', 0);
+      } else if (hasJSession && !hasRoute) {
+        this.log('WARN', '  登录方式: 账号密码登录 (缺少 route Cookie)');
+        this.addTestResult('登录状态', 'warn', '账号密码登录，缺少 route', 0);
+      } else if (hasJSession && hasRoute) {
+        this.log('OK', '  登录方式: 账号密码登录 (Cookie 完整)');
+        this.addTestResult('登录状态', 'success', '账号密码登录，Cookie 完整', 0);
+      }
+
       for (const pair of cookies.split(';')) {
         const trimmed = pair.trim();
         if (trimmed.length > 0) {
           this.log('INFO', `  cookie-pair: ${trimmed.substring(0, 120)}`);
         }
       }
+    }
+
+    // 学生信息
+    const cachedInfo = getCachedStudentInfo();
+    let parsedInfo: StudentInfo | null = null;
+    if (this.studentInfoStr.length > 0) {
+      try {
+        parsedInfo = JSON.parse(this.studentInfoStr) as StudentInfo;
+      } catch (e) {
+        parsedInfo = null;
+      }
+    }
+    const info = parsedInfo ?? cachedInfo;
+    if (info && info.name.length > 0) {
+      this.log('OK', `学生信息: ${info.name} (${info.studentId}) ${info.college}`);
+      this.addTestResult('学生信息', 'success', `${info.name} ${info.college}`, 0);
+    } else if (sid.length > 0) {
+      this.log('WARN', `学生信息: 学号 ${sid}，姓名未获取`);
+      this.addTestResult('学生信息', 'warn', `学号 ${sid}，姓名未获取`, 0);
+    } else {
+      this.addTestResult('学生信息', 'idle', '未登录', 0);
     }
 
     const semCount = (this.semesters ?? []).length;
@@ -101,189 +187,181 @@ export struct DiagnosticPage {
         `  最新: ${last.id} (${last.name}), ` +
         `课程数=${last.courses?.length ?? 0}, ` +
         `考试数=${last.exams?.length ?? 0}`);
-      const parts = last.id.split('-');
-      if (parts.length >= 3) {
-        const year = `${parts[0]}-${parts[1]}`;
-        const term = parts[2] === '1' ? '3' : '12';
-        this.log('INFO', `  转换: xnm=${year}, xqm=${term}`);
-      }
+      this.addTestResult('学期数据', 'success', `${semCount} 个学期`, 0);
+    } else {
+      this.addTestResult('学期数据', 'idle', '无数据', 0);
     }
   }
 
   // ── 测试：基础网络连通性 ──
   private async testConnectivity(): Promise<void> {
     this.log('INFO', '── 测试: 基础网络连通性 ──');
-    const urls = [
-      'https://www.baidu.com',
-      'https://developer.huawei.com/consumer/cn/',
-      'https://zdbk.zju.edu.cn/jwglxt',
-      'https://zjuam.zju.edu.cn/cas/login'
+    const urls: UrlTestItem[] = [
+      { url: 'https://www.baidu.com', name: '公网 (百度)' },
+      { url: 'https://developer.huawei.com/consumer/cn/', name: '公网 (华为)' },
+      { url: `${JW_BASE}/jwglxt`, name: '校内 (教务系统)' },
+      { url: `${CAS_BASE}/login`, name: '校内 (CAS认证)' }
     ];
-    for (const url of urls) {
+
+    let allOk = true;
+    for (const item of urls) {
+      this.addTestResult(item.name, 'running', '测试中...', 0);
       const req = http.createHttp();
       try {
         const start = Date.now();
-        const resp = await req.request(url, {
+        const resp = await req.request(item.url, {
           method: http.RequestMethod.GET,
           header: { 'Connection': 'close' },
           connectTimeout: 10000,
-          readTimeout: 10000
+          readTimeout: 10000,
+          dnsServers: ['114.114.114.114', '223.5.5.5', '8.8.8.8']
         });
         const cost = Date.now() - start;
-        this.log(resp.responseCode === 200 ? 'OK' : 'WARN',
-          `连通性 ${url}: HTTP ${resp.responseCode}, ${cost}ms, resultLen=${(resp.result as string)?.length ?? 0}`);
-        if (resp.responseCode !== 200) {
-          const preview = (resp.result as string ?? '').substring(0, 120);
-          this.log('INFO', `  响应预览: ${preview}`);
+        if (resp.responseCode === 200) {
+          this.log('OK', `${item.name}: HTTP ${resp.responseCode}, ${cost}ms`);
+          this.addTestResult(item.name, 'success', `${cost}ms`, cost);
+        } else {
+          this.log('WARN', `${item.name}: HTTP ${resp.responseCode}, ${cost}ms`);
+          this.addTestResult(item.name, 'warn', `HTTP ${resp.responseCode}`, cost);
+          if (item.name.includes('校内')) allOk = false;
         }
       } catch (e) {
-        this.log('ERR', `连通性 ${url}: 异常 - ${(e as Error).message}`);
+        const msg = (e as Error).message;
+        this.log('ERR', `${item.name}: ${msg}`);
+        this.addTestResult(item.name, msg.includes('timeout') ? 'timeout' : 'error', msg, 0);
+        if (item.name.includes('校内')) allOk = false;
       } finally {
         req.destroy();
       }
+    }
+
+    if (allOk) {
+      this.addTestResult('网络连通性', 'success', '全部正常', 0);
+    } else {
+      this.addTestResult('网络连通性', 'warn', '校内网络可能受限', 0);
     }
   }
 
   // ── 测试：获取学生信息 ──
   private async testStudentInfo(): Promise<void> {
     this.log('INFO', '── 测试: 获取学生信息 ──');
+    this.addTestResult('学生信息获取', 'running', '测试中...', 0);
     try {
+      const start = Date.now();
       const r = await fetchStudentInfo();
+      const cost = Date.now() - start;
       if (r.success) {
-        this.log('OK', `学号: ${r.studentId}, 姓名: ${r.name || '(未获取)'}`);
+        this.log('OK', `学号: ${r.studentId}, 姓名: ${r.name || '(未获取)'}, 学院: ${r.college || '(未获取)'}`);
+        if (r.name.length > 0) {
+          this.addTestResult('学生信息获取', 'success', `${r.name} ${cost}ms`, cost);
+        } else {
+          this.addTestResult('学生信息获取', 'warn', `学号 ${r.studentId}，姓名未获取`, cost);
+        }
       } else {
         this.log('ERR', `失败: 所有方法均无法提取学号`);
+        this.addTestResult('学生信息获取', 'error', '无法提取学号', cost);
       }
     } catch (e) {
-      this.log('ERR', `异常: ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      this.log('ERR', `异常: ${msg}`);
+      this.addTestResult('学生信息获取', 'error', msg, 0);
     }
   }
 
   // ── 测试：获取学期列表 ──
   private async testSemesters(): Promise<void> {
     this.log('INFO', '── 测试: 获取学期列表 ──');
+    this.addTestResult('学期列表', 'running', '测试中...', 0);
     try {
-      // 使用 GET 获取原始 HTML 供调试（学期页面是 GET 接口）
-      const rawR = await fetchRawGet(
-        `${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default`);
-      this.log(rawR.success ? 'INFO' : 'ERR',
-        `原始响应 (${rawR.message}): ${(rawR.data ?? '').substring(0, 200)}`);
-      if (!rawR.success) {
-        this.log('WARN', '原始 GET 请求失败，尝试使用底层 http 模块直接请求...');
-        const req = http.createHttp();
-        try {
-          const direct = await req.request(`${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default`, {
-            method: http.RequestMethod.GET,
-            connectTimeout: 10000,
-            readTimeout: 10000,
-            usingCache: false
-          });
-          req.destroy();
-          this.log('INFO', `底层直接请求 HTTP ${direct.responseCode}, length=${(direct.result as string)?.length ?? 0}`);
-        } catch (e2) {
-          req.destroy();
-          this.log('ERR', `底层直接请求也失败: ${(e2 as Error).message}`);
-        }
-      }
-
+      const start = Date.now();
       const r = await fetchSemesters();
+      const cost = Date.now() - start;
       this.log(r.success ? 'OK' : 'ERR', `fetchSemesters success=${r.success}, msg="${r.message}"`);
       if (r.success && r.data) {
         this.log(r.data.length > 0 ? 'OK' : 'WARN', `获取到 ${r.data.length} 个学期`);
         for (const s of r.data) {
           this.log('INFO', `  ${s.id} → ${s.name}`);
         }
-        if (r.data.length === 0) {
-          this.log('WARN', '  检查上方原始响应中是否含有 name="xnm" 和 name="xqm" 的 select 元素');
-        }
+        this.addTestResult('学期列表', r.data.length > 0 ? 'success' : 'warn', `${r.data.length} 个学期 ${cost}ms`, cost);
+      } else {
+        this.addTestResult('学期列表', 'error', r.message || '失败', cost);
       }
     } catch (e) {
-      this.log('ERR', `异常: ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      this.log('ERR', `异常: ${msg}`);
+      this.addTestResult('学期列表', 'error', msg, 0);
     }
   }
 
-  // ── 测试：获取成绩（用最新学期） ──
+  // ── 测试：获取成绩 ──
   private async testGrades(): Promise<void> {
     this.log('INFO', '── 测试: 获取成绩 ──');
+    this.addTestResult('成绩查询', 'running', '测试中...', 0);
     const sems = this.semesters ?? [];
     const semId = sems.length > 0 ? sems[sems.length - 1].id : '2024-2025-1';
     this.log('INFO', `使用学期 ID: ${semId}`);
     try {
+      const start = Date.now();
       const r = await fetchGrades(semId);
+      const cost = Date.now() - start;
       this.log(r.success ? 'OK' : 'ERR', `success=${r.success}, msg="${r.message}"`);
       if (r.success && r.data) {
-        this.log(r.data.length > 0 ? 'OK' : 'WARN', `获取到 ${r.data.length} 条成绩记录`);
+        this.log(r.data.length > 0 ? 'OK' : 'INFO', `获取到 ${r.data.length} 条成绩记录`);
         for (let i = 0; i < Math.min(3, r.data.length); i++) {
           const c = r.data[i];
           this.log('INFO', `  [${i}] ${c.name} | 成绩:${c.grade} 绩点:${c.gradePoint}`);
         }
-        if (r.data.length === 0) {
-          // 获取原始响应帮助诊断
-          const parts = semId.split('-');
-          const year = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : '2024-2025';
-          const term = parts.length >= 3 ? (parts[2] === '1' ? '3' : '12') : '3';
-          const rawR = await fetchRaw(
-            `${JW_BASE}/cxdy/xscjcx_cxXscjIndex.html?doType=query&queryModel.showCount=5000`,
-            `xnm=${year}&xqm=${term}&_search=false&nd=1&queryModel.showCount=5000&queryModel.currentPage=1&queryModel.sortName=&queryModel.sortOrder=asc&time=0`,
-            { 'Referer': `${JW_BASE}/cxdy/xscjcx_cxXscjIndex.html` }
-          );
-          this.log('INFO', `  成绩原始响应 (${rawR.message}): ${(rawR.data ?? '').substring(0, 300)}`);
-        }
+        this.addTestResult('成绩查询', 'success', `${r.data.length} 条记录 ${cost}ms`, cost);
+      } else {
+        this.addTestResult('成绩查询', 'error', r.message || '失败', cost);
       }
     } catch (e) {
-      this.log('ERR', `异常: ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      this.log('ERR', `异常: ${msg}`);
+      this.addTestResult('成绩查询', 'error', msg, 0);
     }
   }
 
-  // ── 测试：获取课表（用最新学期） ──
+  // ── 测试：获取课表 ──
   private async testSchedule(): Promise<void> {
     this.log('INFO', '── 测试: 获取课表 ──');
+    this.addTestResult('课表查询', 'running', '测试中...', 0);
     const sems = this.semesters ?? [];
     const semId = sems.length > 0 ? sems[sems.length - 1].id : '2024-2025-1';
     this.log('INFO', `使用学期 ID: ${semId}`);
     try {
+      const start = Date.now();
       const r = await fetchCourseSchedule(semId);
+      const cost = Date.now() - start;
       this.log(r.success ? 'OK' : 'ERR', `success=${r.success}, msg="${r.message}"`);
-      if (!r.success) {
-        // 获取原始响应帮助诊断 901 等错误
-        const parts = semId.split('-');
-        const year = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : '2024-2025';
-        const term = parts.length >= 3 ? (parts[2] === '1' ? '3' : '12') : '3';
-        const rawR = await fetchRaw(
-          `${JW_BASE}/kbcx/xskbcx_cxXsKb.html`,
-          `xnm=${year}&xqm=${term}&captcha_value=`,
-          { 'X-Requested-With': 'XMLHttpRequest', 'Referer': `${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html` }
-        );
-        this.log('INFO', `  课表原始响应 (${rawR.message}): ${(rawR.data ?? '').substring(0, 300)}`);
-      }
       if (r.success && r.data) {
-        this.log(r.data.length > 0 ? 'OK' : 'WARN', `获取到 ${r.data.length} 门课程`);
+        this.log(r.data.length > 0 ? 'OK' : 'INFO', `获取到 ${r.data.length} 门课程`);
         for (let i = 0; i < Math.min(3, r.data.length); i++) {
           const c = r.data[i];
           this.log('INFO', `  [${i}] ${c.name} | 教师:${c.teacher} 时间段:${c.timeSlots?.length ?? 0}个`);
         }
-        if (r.data.length === 0) {
-          this.log('WARN', '  课表为空：检查 kcb 字段 HTML 格式是否与正则匹配');
-        }
-        // 检查学号是否被提取
-        const sid = getStudentId();
-        if (sid.length > 0) {
-          this.log('OK', `  从课表响应中提取到学号: ${sid}`);
-        }
+        this.addTestResult('课表查询', 'success', `${r.data.length} 门课程 ${cost}ms`, cost);
+      } else {
+        this.addTestResult('课表查询', 'error', r.message || '失败', cost);
       }
     } catch (e) {
-      this.log('ERR', `异常: ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      this.log('ERR', `异常: ${msg}`);
+      this.addTestResult('课表查询', 'error', msg, 0);
     }
   }
 
-  // ── 测试：获取考试（用最新学期） ──
+  // ── 测试：获取考试 ──
   private async testExams(): Promise<void> {
     this.log('INFO', '── 测试: 获取考试 ──');
+    this.addTestResult('考试查询', 'running', '测试中...', 0);
     const sems = this.semesters ?? [];
     const semId = sems.length > 0 ? sems[sems.length - 1].id : '2024-2025-1';
     this.log('INFO', `使用学期 ID: ${semId}`);
     try {
+      const start = Date.now();
       const r = await fetchExams(semId);
+      const cost = Date.now() - start;
       this.log(r.success ? 'OK' : 'ERR', `success=${r.success}, msg="${r.message}"`);
       if (r.success && r.data) {
         this.log('OK', `获取到 ${r.data.length} 条考试记录`);
@@ -291,9 +369,14 @@ export struct DiagnosticPage {
           const e = r.data[i];
           this.log('INFO', `  [${i}] ${e.courseName} | 地点:${e.location} 座位:${e.seatNo}`);
         }
+        this.addTestResult('考试查询', 'success', `${r.data.length} 条记录 ${cost}ms`, cost);
+      } else {
+        this.addTestResult('考试查询', 'error', r.message || '失败', cost);
       }
     } catch (e) {
-      this.log('ERR', `异常: ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      this.log('ERR', `异常: ${msg}`);
+      this.addTestResult('考试查询', 'error', msg, 0);
     }
   }
 
@@ -318,13 +401,17 @@ export struct DiagnosticPage {
 
     if (!isLoggedIn()) {
       this.log('ERR', '未登录，跳过 API 测试。请先登录后重试。');
+      this.overallStatus = '未登录';
+      this.overallColor = '#FF3B30';
       this.isTesting = false;
       return;
     }
 
-    // 并行执行，每项最多 15 秒，避免串行等待
+    // 串行执行网络连通性测试（避免并行影响准确性）
+    await this.testConnectivity();
+
+    // 并行执行 API 测试
     await Promise.all([
-      this.withTimeout(this.testConnectivity(), 15000, '连通性'),
       this.withTimeout(this.testStudentInfo(), 15000, '学生信息'),
       this.withTimeout(this.testSemesters(), 15000, '学期列表'),
       this.withTimeout(this.testGrades(), 15000, '成绩'),
@@ -332,8 +419,77 @@ export struct DiagnosticPage {
       this.withTimeout(this.testExams(), 15000, '考试')
     ]);
 
+    // 计算总体状态
+    const errors = this.testResults.filter(r => r.status === 'error' || r.status === 'timeout').length;
+    const warns = this.testResults.filter(r => r.status === 'warn').length;
+    if (errors > 0) {
+      this.overallStatus = `${errors} 项异常，建议检查网络或重新登录`;
+      this.overallColor = '#FF3B30';
+    } else if (warns > 0) {
+      this.overallStatus = `${warns} 项警告，部分功能可能受限`;
+      this.overallColor = '#FF9500';
+    } else {
+      this.overallStatus = '所有测试通过';
+      this.overallColor = '#34C759';
+    }
+
     this.log('INFO', '▶ 全量诊断完成');
     this.isTesting = false;
+  }
+
+  @Builder
+  StatusCard() {
+    Column({ space: 8 }) {
+      // 总体状态
+      Row({ space: 8 }) {
+        Text(this.overallStatus.length > 0 ? this.overallStatus : '点击「全量诊断」开始测试')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.overallStatus.length > 0 ? this.overallColor : $r('app.color.text_secondary'))
+        if (this.isTesting) {
+          LoadingProgress().width(16).height(16).color($r('app.color.color_blue'))
+        }
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+
+      // 测试结果网格
+      if (this.testResults.length > 0) {
+        Grid() {
+          ForEach(this.testResults, (result: TestResult) => {
+            GridItem() {
+              Column({ space: 4 }) {
+                Text(this.getStatusIcon(result.status))
+                  .fontSize(18)
+                  .fontColor(this.getStatusColor(result.status))
+                Text(result.label)
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_secondary'))
+                if (result.detail.length > 0 && result.status !== 'idle') {
+                  Text(result.detail)
+                    .fontSize(10)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                }
+              }
+              .padding(8)
+              .width('100%')
+              .backgroundColor($r('app.color.app_background'))
+              .borderRadius(10)
+            }
+          }, (result: TestResult, idx: number) => `${idx}_${result.label}`)
+        }
+        .columnsTemplate('1fr 1fr 1fr')
+        .columnsGap(8)
+        .rowsGap(8)
+        .width('100%')
+      }
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor($r('app.color.card_background'))
+    .borderRadius(16)
   }
 
   @Builder
@@ -342,7 +498,7 @@ export struct DiagnosticPage {
       Text(entry.time)
         .fontSize(10)
         .fontColor('#8E8E93')
-        .width(56)
+        .width(52)
         .flexShrink(0)
 
       Text(entry.level)
@@ -351,7 +507,7 @@ export struct DiagnosticPage {
         .fontColor(entry.level === 'OK' ? '#34C759' :
           entry.level === 'ERR' ? '#FF3B30' :
           entry.level === 'WARN' ? '#FF9500' : '#007AFF')
-        .width(36)
+        .width(32)
         .flexShrink(0)
 
       Text(entry.msg)
@@ -368,163 +524,133 @@ export struct DiagnosticPage {
   build() {
     NavDestination() {
       Column() {
-        // ── 工具栏 ──
-        Row({ space: 8 }) {
-          Button('全量诊断') 
-          .onClick(() => { this.runFullTest(); })
-          .enabled(!this.isTesting)
-          .fontSize(13).height(36)
-          .backgroundColor($r('app.color.color_blue'))
-          .fontColor(Color.White)
-          .borderRadius(10)
-          .padding({ left: 14, right: 14 })
-          .layoutWeight(1)
+        Scroll() {
+          Column({ space: 12 }) {
+            // ── 状态概览卡片 ──
+            this.StatusCard()
 
-          Button('状态快照') 
-          .onClick(() => { this.checkState(); })
-          .enabled(!this.isTesting)
-          .fontSize(13).height(36)
-          .backgroundColor($r('app.color.card_background'))
-          .fontColor($r('app.color.text_primary'))
-          .borderRadius(10)
-          .padding({ left: 14, right: 14 })
+            // ── 操作按钮 ──
+            Row({ space: 10 }) {
+              Button('全量诊断')
+                .onClick(() => { this.runFullTest(); })
+                .enabled(!this.isTesting)
+                .fontSize(14).height(40)
+                .backgroundColor($r('app.color.color_blue'))
+                .fontColor(Color.White)
+                .borderRadius(10)
+                .padding({ left: 20, right: 20 })
+                .layoutWeight(1)
 
-          Button('清空') 
-          .onClick(() => { this.clearLogs(); })
-          .fontSize(13).height(36)
-          .backgroundColor($r('app.color.card_background'))
-          .fontColor($r('app.color.color_red'))
-          .borderRadius(10)
-          .padding({ left: 14, right: 14 })
+              Button('状态快照')
+                .onClick(() => { this.checkState(); })
+                .enabled(!this.isTesting)
+                .fontSize(14).height(40)
+                .backgroundColor($r('app.color.card_background'))
+                .fontColor($r('app.color.text_primary'))
+                .borderRadius(10)
+                .padding({ left: 16, right: 16 })
 
-          Button('复制') 
-          .onClick(() => { this.copyLogs(); })
-          .enabled(this.logs.length > 0)
-          .fontSize(13).height(36)
-          .backgroundColor($r('app.color.card_background'))
-          .fontColor($r('app.color.color_blue'))
-          .borderRadius(10)
-          .padding({ left: 14, right: 14 })
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 12, bottom: 8 })
-
-        // ── 单项测试按钮 ──
-        Row({ space: 8 }) {
-          Button('学期').fontSize(12).height(30)
-            .backgroundColor($r('app.color.card_background'))
-            .fontColor($r('app.color.text_primary'))
-            .borderRadius(8).padding({ left: 10, right: 10 })
-            .enabled(!this.isTesting)
-            .onClick(async () => {
-              this.isTesting = true;
-              await this.testSemesters();
-              this.isTesting = false;
-            })
-          Button('成绩').fontSize(12).height(30)
-            .backgroundColor($r('app.color.card_background'))
-            .fontColor($r('app.color.text_primary'))
-            .borderRadius(8).padding({ left: 10, right: 10 })
-            .enabled(!this.isTesting)
-            .onClick(async () => {
-              this.isTesting = true;
-              await this.testGrades();
-              this.isTesting = false;
-            })
-          Button('课表').fontSize(12).height(30)
-            .backgroundColor($r('app.color.card_background'))
-            .fontColor($r('app.color.text_primary'))
-            .borderRadius(8).padding({ left: 10, right: 10 })
-            .enabled(!this.isTesting)
-            .onClick(async () => {
-              this.isTesting = true;
-              await this.testSchedule();
-              this.isTesting = false;
-            })
-          Button('考试').fontSize(12).height(30)
-            .backgroundColor($r('app.color.card_background'))
-            .fontColor($r('app.color.text_primary'))
-            .borderRadius(8).padding({ left: 10, right: 10 })
-            .enabled(!this.isTesting)
-            .onClick(async () => {
-              this.isTesting = true;
-              await this.testExams();
-              this.isTesting = false;
-            })
-          Button('学号').fontSize(12).height(30)
-            .backgroundColor($r('app.color.card_background'))
-            .fontColor($r('app.color.text_primary'))
-            .borderRadius(8).padding({ left: 10, right: 10 })
-            .enabled(!this.isTesting)
-            .onClick(async () => {
-              this.isTesting = true;
-              await this.testStudentInfo();
-              this.isTesting = false;
-            })
-          Button('网络').fontSize(12).height(30)
-            .backgroundColor($r('app.color.card_background'))
-            .fontColor($r('app.color.text_primary'))
-            .borderRadius(8).padding({ left: 10, right: 10 })
-            .enabled(!this.isTesting)
-            .onClick(async () => {
-              this.isTesting = true;
-              await this.testConnectivity();
-              this.isTesting = false;
-            })
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, bottom: 8 })
-
-        if (this.isTesting) {
-          Row({ space: 8 }) {
-            LoadingProgress().width(16).height(16).color($r('app.color.color_blue'))
-            Text('测试中...').fontSize(12).fontColor($r('app.color.text_secondary'))
-          }
-          .padding({ left: 16, bottom: 6 })
-          .width('100%')
-        }
-
-        // ── 日志区域 ──
-        if (this.logs.length === 0) {
-          Column({ space: 8 }) {
-            Text('点击「全量诊断」开始测试')
-              .fontSize(14).fontColor($r('app.color.text_secondary'))
-            Text('或点击上方单项按钮单独测试某个接口')
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-        } else {
-          Scroll(this.scroller) {
-            Column() {
-              ForEach(this.logs, (entry: LogEntry, idx: number) => {
-                this.LogItem(entry)
-                if (idx < this.logs.length - 1) {
-                  Row().width('100%').height(0.5)
-                    .backgroundColor($r('app.color.separator'))
-                    .margin({ left: 12 })
-                }
-              }, (entry: LogEntry, idx: number) => `${idx}_${entry.time}_${entry.msg}`)
+              Button('清空')
+                .onClick(() => { this.clearLogs(); })
+                .enabled(!this.isTesting)
+                .fontSize(14).height(40)
+                .backgroundColor($r('app.color.card_background'))
+                .fontColor($r('app.color.color_red'))
+                .borderRadius(10)
+                .padding({ left: 16, right: 16 })
             }
             .width('100%')
-            .padding({ bottom: 40 })
+            .padding({ left: 16, right: 16 })
+
+            // ── 单项测试按钮 ──
+            Row({ space: 8 }) {
+              this.QuickTestBtn('学期', () => this.testSemesters())
+              this.QuickTestBtn('成绩', () => this.testGrades())
+              this.QuickTestBtn('课表', () => this.testSchedule())
+              this.QuickTestBtn('考试', () => this.testExams())
+              this.QuickTestBtn('学号', () => this.testStudentInfo())
+              this.QuickTestBtn('网络', () => this.testConnectivity())
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16 })
+
+            // ── 日志区域 ──
+            if (this.logs.length > 0) {
+              Column({ space: 6 }) {
+                Row() {
+                  Text('详细日志')
+                    .fontSize(13)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.text_secondary'))
+                  Blank()
+                  Text(`${this.logs.length} 条`)
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_tertiary'))
+                  Button({ type: ButtonType.Circle }) {
+                    Text('📋').fontSize(12)
+                  }
+                  .width(28).height(28)
+                  .backgroundColor($r('app.color.progress_bg'))
+                  .margin({ left: 8 })
+                  .onClick(() => this.copyLogs())
+                }
+                .width('100%')
+
+                Scroll(this.scroller) {
+                  Column() {
+                    ForEach(this.logs, (entry: LogEntry, idx: number) => {
+                      this.LogItem(entry)
+                      if (idx < this.logs.length - 1) {
+                        Row().width('100%').height(0.5)
+                          .backgroundColor($r('app.color.separator'))
+                          .margin({ left: 12 })
+                      }
+                    }, (entry: LogEntry, idx: number) => `${idx}_${entry.time}_${entry.msg}`)
+                  }
+                  .width('100%')
+                  .padding({ bottom: 20 })
+                }
+                .height(280)
+                .scrollBar(BarState.Off)
+                .edgeEffect(EdgeEffect.Spring)
+                .backgroundColor($r('app.color.card_background'))
+                .borderRadius(12)
+              }
+              .width('100%')
+              .padding(16)
+              .backgroundColor($r('app.color.card_background'))
+              .borderRadius(16)
+            }
+
+            Blank().height(40)
           }
-          .layoutWeight(1)
-          .scrollBar(BarState.Off)
-          .edgeEffect(EdgeEffect.Spring)
-          .backgroundColor($r('app.color.card_background'))
-          .borderRadius(12)
-          .margin({ left: 16, right: 16, bottom: 16 })
+          .width('100%')
+          .padding({ top: 4, bottom: 16 })
         }
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
       }
       .width('100%').height('100%')
       .backgroundColor($r('app.color.app_background'))
     }
     .title('数据诊断')
-    .onReady((ctx: NavDestinationContext) => {
-      this.pathStack = ctx.pathStack;
+    .onReady((_ctx: NavDestinationContext) => {
     })
+  }
+
+  @Builder
+  QuickTestBtn(label: string, onTap: () => Promise<void>) {
+    Button(label)
+      .fontSize(12).height(32)
+      .backgroundColor($r('app.color.card_background'))
+      .fontColor($r('app.color.text_primary'))
+      .borderRadius(8).padding({ left: 10, right: 10 })
+      .enabled(!this.isTesting)
+      .onClick(async () => {
+        this.isTesting = true;
+        await onTap();
+        this.isTesting = false;
+      })
   }
 }

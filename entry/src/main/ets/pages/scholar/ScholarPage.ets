@@ -4,7 +4,7 @@ import { Semester, GpaInfo } from '../../model/Semester';
 import { Todo, Course } from '../../model/Course';
 import { AppKeys } from '../Index';
 import { TwoLineCard, RoundRectangleCardWithForehead, SearchBar, EmptyView, LoadingView } from '../../components/CommonComponents';
-import { fetchSemesters, fetchGrades, fetchCourseSchedule, fetchExams, fetchTodos } from '../../service/NetworkService';
+import { fetchSemesters, fetchGrades, fetchCourseSchedule, fetchExams, fetchTodos, fetchStudentInfo, getCachedStudentInfo, StudentInfo, setCachedStudentInfo } from '../../service/NetworkService';
 import { StorageService } from '../../service/StorageService';
 import common from '@ohos.app.ability.common';
 
@@ -25,6 +25,8 @@ export struct ScholarPage {
   @StorageLink(AppKeys.HIDE_GPA) hideGpa: boolean = false;
   @StorageLink(AppKeys.IS_LOGGED_IN) @Watch('onLoginStateChanged') isLoggedIn: boolean = false;
   @StorageLink(AppKeys.LAST_UPDATE) lastUpdate: number = 0;
+  @StorageLink(AppKeys.STUDENT_INFO) studentInfoStr: string = '';
+  @StorageLink(AppKeys.USERNAME) username: string = '';
   @State semesterIndex: number = 0;
   @State isRefreshing: boolean = false;
   @State errorMessage: string = '';
@@ -35,6 +37,19 @@ export struct ScholarPage {
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
   private storageService: StorageService | null = null;
   private updateLabelTimer: number = -1;
+
+  private get studentInfo(): StudentInfo | null {
+    const str = this.studentInfoStr;
+    if (str && str.length > 0) {
+      try {
+        return JSON.parse(str) as StudentInfo;
+      } catch {
+        // fall through to cached fallback
+      }
+    }
+    const cached = getCachedStudentInfo();
+    return cached ?? null;
+  }
 
   aboutToAppear(): void {
     try {
@@ -200,8 +215,27 @@ export struct ScholarPage {
       }
 
       // 使用返回的学期列表
-      const candidateSemesters: Semester[] = semResult.data;
+      let candidateSemesters: Semester[] = semResult.data;
       console.info(`[ScholarPage] Got ${candidateSemesters.length} candidate semesters`);
+
+      // ═══════════════════════════════════════════════════════
+      // 与现有缓存数据合并：保留已有学期的课程/GPA/考试/todo 数据
+      // 当设备不在校园网（API 超时返回兜底数据）时，避免覆盖缓存
+      // ═══════════════════════════════════════════════════════
+      const existingSemesters = this.semesters ?? [];
+      if (existingSemesters.length > 0) {
+        for (let i = 0; i < candidateSemesters.length; i++) {
+          const newSem = candidateSemesters[i];
+          const existing = existingSemesters.find((s: Semester) => s.id === newSem.id);
+          if (existing) {
+            newSem.courses = existing.courses;
+            newSem.exams = existing.exams;
+            newSem.todos = existing.todos;
+            newSem.gpaInfo = existing.gpaInfo;
+            console.info(`[ScholarPage] Preserved cached data for ${newSem.id}: ${existing.courses.length} courses`);
+          }
+        }
+      }
 
       // 获取最近 8 个学期的数据（4 年，约 8 学期）
       // 避免一次请求太多学期导致超时，分批获取
@@ -271,6 +305,18 @@ export struct ScholarPage {
 
       console.info(`[ScholarPage] Data fetch completed, saved ${updatedSemesters.length} semesters`);
       this.isInitialFetchDone = true;
+
+      // 在后台异步获取学生信息（不阻塞主流程）
+      fetchStudentInfo().then((info) => {
+        if (info.success && info.name.length > 0) {
+          setCachedStudentInfo(info);
+          AppStorage.set(AppKeys.STUDENT_INFO, JSON.stringify(info));
+          this.storageService?.saveString('student_info', JSON.stringify(info));
+          console.info(`[ScholarPage] Student info updated: ${info.name}`);
+        }
+      }).catch((e: Error) => {
+        console.warn(`[ScholarPage] Failed to fetch student info: ${e.message}`);
+      });
     } catch (err) {
       this.errorMessage = `获取失败: ${(err as Error).message}`;
       console.error(`[ScholarPage] Fetch data error: ${this.errorMessage}`);
@@ -609,6 +655,100 @@ export struct ScholarPage {
     }
   }
 
+  @Builder
+  StudentInfoCard() {
+    if (this.studentInfo !== null && this.studentInfo !== undefined && this.studentInfo.name.length > 0) {
+      Column({ space: 6 }) {
+        Row({ space: 12 }) {
+          // 头像占位
+          Column() {
+            Text(this.studentInfo.name.substring(0, 1))
+              .fontSize(20)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Color.White)
+          }
+          .width(48)
+          .height(48)
+          .borderRadius(24)
+          .backgroundColor($r('app.color.color_blue'))
+          .justifyContent(FlexAlign.Center)
+
+          Column({ space: 4 }) {
+            Text(this.studentInfo.name)
+              .fontSize(18)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+            Row({ space: 8 }) {
+              Text(this.studentInfo.studentId)
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+              if (this.studentInfo.college.length > 0) {
+                Text(this.studentInfo.college)
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }
+            .width('100%')
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .padding(16)
+
+        if (this.studentInfo.major.length > 0) {
+          Row() {
+            Text('专业')
+              .fontSize(12)
+              .fontColor($r('app.color.text_tertiary'))
+            Blank()
+            Text(this.studentInfo.major)
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, bottom: 12 })
+        }
+      }
+      .width('100%')
+      .backgroundColor($r('app.color.card_background'))
+      .borderRadius(16)
+      .margin({ bottom: 4 })
+    } else if (this.isLoggedIn) {
+      // 简化版：只有学号
+      Row({ space: 12 }) {
+        Column() {
+          Text('👤')
+            .fontSize(22)
+        }
+        .width(44)
+        .height(44)
+        .borderRadius(22)
+        .backgroundColor($r('app.color.progress_bg'))
+        .justifyContent(FlexAlign.Center)
+
+        Column({ space: 2 }) {
+          Text(this.username)
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+          Text('已登录')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .padding(14)
+      .backgroundColor($r('app.color.card_background'))
+      .borderRadius(16)
+      .margin({ bottom: 4 })
+    }
+  }
+
   build() {
     Column() {
       // 固定标题栏
@@ -675,8 +815,8 @@ export struct ScholarPage {
           actionText: '去登录',
           onAction: () => this.navStack.pushPathByName('Login', null)
         })
-      } else if ((this.semesters.length === 0 && this.errorMessage.length === 0) || (this.isRefreshing && this.currentSemester?.courses.length === 0)) {
-        // 正在加载
+      } else if ((this.semesters.length === 0 && this.errorMessage.length === 0) || (this.isRefreshing && !this.isInitialFetchDone)) {
+        // 正在加载（仅在首次加载且没有数据时显示）
         Column() {
           Blank()
           LoadingView({ message: '正在加载学业数据...' })
@@ -714,6 +854,9 @@ export struct ScholarPage {
                 .backgroundColor($r('app.color.card_background'))
                 .borderRadius(16)
               }
+
+              // 学生信息卡片
+              this.StudentInfoCard()
 
               // 当前学期数据卡片
               if (this.currentSemester) {

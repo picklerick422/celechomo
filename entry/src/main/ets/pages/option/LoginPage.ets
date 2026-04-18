@@ -2,7 +2,7 @@
 
 import { AppKeys } from '../Index';
 import { StorageService } from '../../service/StorageService';
-import { login, getSsoLoginUrl, setCookies, BASE_JW, fetchStudentInfo, setStudentId, getStudentId, extractTicketFromCookies } from '../../service/NetworkService';
+import { login, getSsoLoginUrl, setCookies, BASE_JW, fetchStudentInfo, setStudentId, getStudentId, extractTicketFromCookies, setCachedStudentInfo } from '../../service/NetworkService';
 import http from '@ohos.net.http';
 import common from '@ohos.app.ability.common';
 import { webview } from '@kit.ArkWeb';
@@ -95,36 +95,32 @@ export struct LoginPage {
     let username = this.studentId.trim();
     let finalIsGrs = isGrs;
 
+    // 无论哪种登录方式，都在后台异步获取完整学生信息（不阻塞登录流程）
+    console.info('[Login] Fetching student info in background...');
+    fetchStudentInfo().then((info) => {
+      if (info.success) {
+        if (info.name.length > 0) {
+          console.info(`[Login] Got student name: ${info.name}`);
+        }
+        // 缓存学生信息
+        setCachedStudentInfo(info);
+        const infoStr = JSON.stringify(info);
+        AppStorage.set(AppKeys.STUDENT_INFO, infoStr);
+        this.storageService?.saveString('student_info', infoStr);
+      }
+    }).catch((e: Error) => {
+      console.warn(`[Login] fetchStudentInfo failed: ${e.message}`);
+    });
+
+    // 如果 API 没有返回学号，回退到已保存的
     if (username.length === 0) {
-      // 网页登录方式：尝试从 URL 或 API 获取真实学号
-      console.info('[Login] Web login, fetching student info...');
-      try {
-        const info = await fetchStudentInfo();
-        if (info.success && info.studentId.length > 0) {
-          username = info.studentId;
-          finalIsGrs = info.studentId.toUpperCase().startsWith('G');
-          console.info(`[Login] Got student ID from API: ${username}`);
-        } else {
-          // API 失败，但 savedStudentId 可能在 login() 中已被正确设置
-          const saved = getStudentId();
-          if (saved.length > 0) {
-            username = saved;
-            console.info(`[Login] Using savedStudentId: ${username}`);
-          } else {
-            username = 'web_user';
-            console.warn('[Login] Could not get student ID, using web_user');
-          }
-        }
-      } catch (e) {
-        console.warn(`[Login] fetchStudentInfo failed: ${(e as Error).message}`);
-        // 出错时回退到已保存的学号（login() 中设置）
-        const saved = getStudentId();
-        if (saved.length > 0) {
-          username = saved;
-          console.info(`[Login] Using savedStudentId after error: ${username}`);
-        } else {
-          username = 'web_user';
-        }
+      const saved = getStudentId();
+      if (saved.length > 0) {
+        username = saved;
+        console.info(`[Login] Using savedStudentId: ${username}`);
+      } else {
+        username = 'web_user';
+        console.warn('[Login] Could not get student ID, using web_user');
       }
     }
 
@@ -347,115 +343,45 @@ export struct LoginPage {
 
   build() {
     NavDestination() {
-      if (this.showWebLogin) {
-        // 全屏网页登录视图（替换登录表单，避免嵌套 dialog 导致 WebView 尺寸为零）
-        Column() {
-          // 顶栏
-          Row() {
-            Button({ type: ButtonType.Normal }) {
-              Text('✕').fontSize(18).fontColor($r('app.color.text_primary'))
-            }
-            .width(36).height(36)
-            .backgroundColor(Color.Transparent)
-            .onClick(() => { this.closeWebLogin(); })
+      Column() {
+        // 拖拽指示条
+        Row()
+          .width(40).height(4)
+          .borderRadius(2)
+          .backgroundColor($r('app.color.separator'))
+          .margin({ top: 12, bottom: 16 })
 
-            Text('网页登录')
-              .fontSize(18)
+        // ── 登录方式切换 ──
+        Row({ space: 4 }) {
+          Button({ type: ButtonType.Normal }) {
+            Text('学号密码')
+              .fontSize(14)
+              .fontColor(!this.showWebLogin ? Color.White : $r('app.color.text_secondary'))
               .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-              .layoutWeight(1)
-              .textAlign(TextAlign.Center)
-
-            Row().width(36).height(36) // 占位，保持标题居中
           }
-          .width('100%')
-          .padding({ left: 12, right: 12, top: 12, bottom: 8 })
+          .width('50%')
+          .height(36)
+          .borderRadius(8)
+          .backgroundColor(!this.showWebLogin ? $r('app.color.color_blue') : $r('app.color.progress_bg'))
+          .onClick(() => { this.closeWebLogin(); })
 
-          if (this.webLoginMessage.length > 0) {
-            Text(this.webLoginMessage)
-              .fontSize(13)
-              .fontColor($r('app.color.color_blue'))
-              .textAlign(TextAlign.Center)
-              .padding({ left: 16, right: 16, top: 4, bottom: 4 })
+          Button({ type: ButtonType.Normal }) {
+            Text('网页认证')
+              .fontSize(14)
+              .fontColor(this.showWebLogin ? Color.White : $r('app.color.text_secondary'))
+              .fontWeight(FontWeight.Medium)
           }
-
-          // Web 组件：用于浙江大学统一身份认证登录
-          // 使用 onControllerAttached 确保 URL 正确加载
-          Web({ src: this.webLoginUrl, controller: this.webviewController })
-            .javaScriptAccess(true)
-            .domStorageAccess(true)
-            .fileAccess(true)
-            .databaseAccess(true)
-            .mixedMode(MixedMode.All)
-            .onControllerAttached(() => {
-              try {
-                const currentUrl = this.webviewController.getUrl();
-                if (!currentUrl || currentUrl.length === 0 || currentUrl === 'about:blank') {
-                  console.info(`[WebLogin] Controller attached, loading: ${this.webLoginUrl}`);
-                  this.webviewController.loadUrl(this.webLoginUrl);
-                }
-              } catch (e) {
-                console.error(`[WebLogin] loadUrl in onControllerAttached failed: ${(e as Error).message}`);
-              }
-            })
-            .onPageBegin((event: GeneratedTypeLiteralInterface_5) => {
-              if (event) {
-                console.info(`[WebLogin] Page begin: ${event.url}`);
-                this.webLoginMessage = '正在加载...';
-              }
-            })
-            .onPageEnd((event: GeneratedTypeLiteralInterface_6) => {
-              if (event) {
-                console.info(`[WebLogin] Page end: ${event.url}`);
-                this.webLoginMessage = '';
-                // 检查是否登录成功（跳转到教务系统页面）
-                const url = event.url;
-                if (url && (url.includes('jwglxt') || url.includes('zdbk.zju.edu.cn')) &&
-                    !url.includes('cas/login') && !url.includes('zjuam')) {
-                  console.info(`[WebLogin] Detected successful login on page end: ${url}`);
-                  this.fetchWebCookies();
-                }
-              }
-            })
-            .onErrorReceive((event: GeneratedTypeLiteralInterface_7) => {
-              if (event) {
-                const code = event.error.getErrorCode();
-                const info = event.error.getErrorInfo();
-                console.error(`[WebLogin] Error code=${code}, info=${info}`);
-                if (code !== -1) {
-                  this.webLoginMessage = `加载失败 (${code})，请检查网络`;
-                }
-              }
-            })
-            .width('100%')
-            .height('80%')
-
-          Text('在网页完成登录后，将自动保存登录状态')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .textAlign(TextAlign.Center)
-            .padding({ left: 16, right: 16, top: 8, bottom: 16 })
+          .width('50%')
+          .height(36)
+          .borderRadius(8)
+          .backgroundColor(this.showWebLogin ? $r('app.color.color_blue') : $r('app.color.progress_bg'))
+          .onClick(() => { this.openWebLogin(); })
         }
         .width('100%')
-        .height('100%')
-        .backgroundColor($r('app.color.card_background'))
-      } else {
-        // 账号密码登录表单
-        Column() {
-          // 拖拽指示条
-          Row()
-            .width(40).height(4)
-            .borderRadius(2)
-            .backgroundColor($r('app.color.separator'))
-            .margin({ top: 12, bottom: 20 })
+        .padding({ left: 16, right: 16, bottom: 20 })
 
-          Text('统一身份认证登录')
-            .fontSize(20)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
-            .margin({ bottom: 32 })
-
-          // 学号输入
+        if (!this.showWebLogin) {
+          // 学号密码登录表单
           Column({ space: 0 }) {
             Row({ space: 12 }) {
               Text('学号')
@@ -518,32 +444,83 @@ export struct LoginPage {
           .margin({ left: 16, right: 16 })
           .enabled(!this.isLoading)
           .onClick(() => this.doLogin())
-
-          // 网页登录按钮
-          Button({ type: ButtonType.Normal, stateEffect: true }) {
-            Row({ space: 8 }) {
-              Text('🌐')
-                .fontSize(16)
-              Text('使用网页登录')
-                .fontSize(14)
+        } else {
+          // 网页认证视图
+          Column({ space: 8 }) {
+            if (this.webLoginMessage.length > 0) {
+              Text(this.webLoginMessage)
+                .fontSize(13)
                 .fontColor($r('app.color.color_blue'))
-                .fontWeight(FontWeight.Medium)
+                .textAlign(TextAlign.Center)
+                .padding({ left: 16, right: 16, top: 4, bottom: 4 })
             }
+
+            Web({ src: this.webLoginUrl, controller: this.webviewController })
+              .javaScriptAccess(true)
+              .domStorageAccess(true)
+              .fileAccess(true)
+              .databaseAccess(true)
+              .mixedMode(MixedMode.All)
+              .onControllerAttached(() => {
+                try {
+                  const currentUrl = this.webviewController.getUrl();
+                  if (!currentUrl || currentUrl.length === 0 || currentUrl === 'about:blank') {
+                    console.info(`[WebLogin] Controller attached, loading: ${this.webLoginUrl}`);
+                    this.webviewController.loadUrl(this.webLoginUrl);
+                  }
+                } catch (e) {
+                  console.error(`[WebLogin] loadUrl in onControllerAttached failed: ${(e as Error).message}`);
+                }
+              })
+              .onPageBegin((event: GeneratedTypeLiteralInterface_5) => {
+                if (event) {
+                  console.info(`[WebLogin] Page begin: ${event.url}`);
+                  this.webLoginMessage = '正在加载...';
+                }
+              })
+              .onPageEnd((event: GeneratedTypeLiteralInterface_6) => {
+                if (event) {
+                  console.info(`[WebLogin] Page end: ${event.url}`);
+                  this.webLoginMessage = '';
+                  const url = event.url;
+                  if (url && (url.includes('jwglxt') || url.includes('zdbk.zju.edu.cn')) &&
+                      !url.includes('cas/login') && !url.includes('zjuam')) {
+                    console.info(`[WebLogin] Detected successful login on page end: ${url}`);
+                    this.fetchWebCookies();
+                  }
+                }
+              })
+              .onErrorReceive((event: GeneratedTypeLiteralInterface_7) => {
+                if (event) {
+                  const code = event.error.getErrorCode();
+                  const info = event.error.getErrorInfo();
+                  console.error(`[WebLogin] Error code=${code}, info=${info}`);
+                  if (code !== -1) {
+                    this.webLoginMessage = `加载失败 (${code})，请检查网络`;
+                  }
+                }
+              })
+              .width('100%')
+              .layoutWeight(1)
+
+            Text('在网页完成登录后，将自动保存登录状态')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .textAlign(TextAlign.Center)
+              .padding({ left: 16, right: 16, top: 4, bottom: 8 })
           }
           .width('100%')
-          .height(44)
-          .borderRadius(12)
-          .backgroundColor(Color.Transparent)
-          .border({ width: 1, color: $r('app.color.color_blue') })
-          .margin({ left: 16, right: 16, top: 12 })
-          .onClick(() => this.openWebLogin())
-
-          Blank().height(40)
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.card_background'))
+          .borderRadius(16)
+          .margin({ left: 16, right: 16 })
         }
-        .width('100%').height('100%')
-        .backgroundColor($r('app.color.card_background'))
-        .alignItems(HorizontalAlign.Center)
+
+        Blank().height(40)
       }
+      .width('100%').height('100%')
+      .backgroundColor($r('app.color.card_background'))
+      .alignItems(HorizontalAlign.Center)
     }
     .hideTitleBar(true)
     .mode(NavDestinationMode.DIALOG)

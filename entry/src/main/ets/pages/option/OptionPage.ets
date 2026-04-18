@@ -4,7 +4,7 @@ import { AppKeys } from '../Index';
 import { StorageService } from '../../service/StorageService';
 import { TimeRange } from '../../model/Semester';
 import common from '@ohos.app.ability.common';
-import { setCookies } from '../../service/NetworkService';
+import { setCookies, setCachedStudentInfo } from '../../service/NetworkService';
 import { promptAction } from '@kit.ArkUI';
 
 enum PickerType {
@@ -60,9 +60,12 @@ export struct OptionPage {
       }).then(async (result) => {
         if (result && (result as promptAction.ShowDialogSuccessResponse).index === 1) {
           setCookies('');
+          setCachedStudentInfo(null);
           AppStorage.set(AppKeys.USERNAME, '');
           AppStorage.set(AppKeys.IS_LOGGED_IN, false);
+          AppStorage.set(AppKeys.STUDENT_INFO, '');
           await storageService?.saveString('cookies', '');
+          await storageService?.saveString('student_info', '');
           await storageService?.saveUsername('');
         }
       }).catch(() => {

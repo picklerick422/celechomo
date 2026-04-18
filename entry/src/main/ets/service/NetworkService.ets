@@ -142,7 +142,7 @@ function mergeCookieMaps(base: Map<string, string>, update: Map<string, string>)
  * cookieOverride: 若提供则替代 savedCookies（用于登录流程中间步骤）
  */
 async function httpGet(url: string, extraHeaders?: Record<string, string>,
-  cookieOverride?: string): Promise<http.HttpResponse> {
+  cookieOverride?: string, timeoutMs: number = 15000): Promise<http.HttpResponse> {
   const request = http.createHttp();
   try {
     const cookieStr = cookieOverride !== undefined ? cookieOverride : savedCookies;
@@ -165,8 +165,8 @@ async function httpGet(url: string, extraHeaders?: Record<string, string>,
     const response = await request.request(url, {
       method: http.RequestMethod.GET,
       header: headers,
-      connectTimeout: 15000,
-      readTimeout: 15000,
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
       usingCache: false,
       dnsServers: DNS_SERVERS
     });
@@ -183,7 +183,7 @@ async function httpGet(url: string, extraHeaders?: Record<string, string>,
 async function httpPost(url: string, body: string,
   contentType: string = 'application/x-www-form-urlencoded',
   extraHeaders?: Record<string, string>,
-  cookieOverride?: string): Promise<http.HttpResponse> {
+  cookieOverride?: string, timeoutMs: number = 15000): Promise<http.HttpResponse> {
   const request = http.createHttp();
   try {
     const cookieStr = cookieOverride !== undefined ? cookieOverride : savedCookies;
@@ -211,8 +211,8 @@ async function httpPost(url: string, body: string,
       method: http.RequestMethod.POST,
       header: headers,
       extraData: requestBody,
-      connectTimeout: 15000,
-      readTimeout: 15000,
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
       usingCache: false,
       dnsServers: DNS_SERVERS
     });
@@ -243,6 +243,113 @@ export interface StudentInfo {
   studentId: string;
   name: string;
   college: string;
+  major: string;
+  grade: string;
+}
+
+let cachedStudentInfo: StudentInfo | null = null;
+
+export function getCachedStudentInfo(): StudentInfo | null {
+  return cachedStudentInfo ?? null;
+}
+
+export function setCachedStudentInfo(info: StudentInfo | null): void {
+  cachedStudentInfo = info;
+}
+
+/**
+ * 从教务系统首页 HTML 中提取学生信息（学号、姓名、学院等）
+ */
+function extractStudentInfoFromHtml(html: string): StudentInfo | null {
+  // 会话失效检测
+  if (html.includes('name="execution"') || html.includes('cas/login')) {
+    console.warn('[StudentInfo] Session invalid (login form detected)');
+    return null;
+  }
+
+  let studentId = '';
+  let name = '';
+  let college = '';
+  let major = '';
+  let grade = '';
+
+  // 提取学号
+  const idPatterns = [
+    /xh['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+    /usercode['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+    /xhdm['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+    /studentId['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+    /学号[：:]\s*([^<\s]+)/,
+  ];
+  for (const pattern of idPatterns) {
+    const match = html.match(pattern);
+    if (match && match[1] && match[1].length >= 6) {
+      studentId = match[1];
+      break;
+    }
+  }
+
+  // 提取姓名：常见格式有 xm="张三"、userName="张三"、姓名：张三
+  const namePatterns = [
+    /xm['"]?\s*[:=]\s*['"]([^'"]+)['"]/i,
+    /userName['"]?\s*[:=]\s*['"]([^'"]+)['"]/i,
+    /姓名[：:]\s*([^<\s，,]+)/,
+    /<span[^>]*>\s*([^<]{2,5})\s*<\/span>\s*<span[^>]*>\s*同学/,
+    /欢迎您[,，]\s*([^<\s，,]{2,5})/,
+  ];
+  for (const pattern of namePatterns) {
+    const match = html.match(pattern);
+    if (match && match[1] && match[1].length >= 2 && match[1].length <= 10) {
+      name = match[1].trim();
+      break;
+    }
+  }
+
+  // 提取学院：常见格式 yxmc="计算机学院"
+  const collegePatterns = [
+    /yxmc['"]?\s*[:=]\s*['"]([^'"]+)['"]/i,
+    /学院[：:]\s*([^<\s]+)/,
+    /院系[：:]\s*([^<\s]+)/,
+    /所在学院[：:]\s*([^<\s]+)/,
+  ];
+  for (const pattern of collegePatterns) {
+    const match = html.match(pattern);
+    if (match && match[1] && match[1].length >= 4) {
+      college = match[1].trim();
+      break;
+    }
+  }
+
+  // 提取专业
+  const majorPatterns = [
+    /zymc['"]?\s*[:=]\s*['"]([^'"]+)['"]/i,
+    /专业[：:]\s*([^<\s]+)/,
+  ];
+  for (const pattern of majorPatterns) {
+    const match = html.match(pattern);
+    if (match && match[1] && match[1].length >= 4) {
+      major = match[1].trim();
+      break;
+    }
+  }
+
+  // 提取年级
+  const gradePatterns = [
+    /njmc['"]?\s*[:=]\s*['"]([^'"]+)['"]/i,
+    /年级[：:]\s*(\d{4})/,
+  ];
+  for (const pattern of gradePatterns) {
+    const match = html.match(pattern);
+    if (match && match[1]) {
+      grade = match[1].trim();
+      break;
+    }
+  }
+
+  if (studentId.length > 0 || name.length > 0) {
+    return { success: true, studentId, name, college, major, grade };
+  }
+  return null;
 }
 
 /**
@@ -250,15 +357,15 @@ export interface StudentInfo {
  * 网页登录成功后，调用此接口获取真实学号
  *
  * 优先方案：从课表 API 响应中提取学号（xjh 字段），已验证可用。
- * 兜底方案：从首页 HTML 中用正则提取。
+ * 次优方案：从首页 HTML 中提取完整学生信息（学号、姓名、学院）。
  */
 export async function fetchStudentInfo(): Promise<StudentInfo> {
   console.info('[StudentInfo] Starting fetchStudentInfo...');
 
-  // 如果已经有学号，直接返回
-  if (savedStudentId.length > 0) {
-    console.info(`[StudentInfo] Already have student ID: ${savedStudentId}`);
-    return { success: true, studentId: savedStudentId, name: '', college: '' };
+  // 如果已经有完整缓存，直接返回
+  if (cachedStudentInfo && cachedStudentInfo.studentId.length > 0) {
+    console.info(`[StudentInfo] Using cached info: ${cachedStudentInfo.studentId}`);
+    return cachedStudentInfo;
   }
 
   try {
@@ -267,87 +374,87 @@ export async function fetchStudentInfo(): Promise<StudentInfo> {
     // ZJU 正方系统的课表接口会返回当前登录人的学号（xh 字段），
     // 且响应为标准 JSON，无需解析 HTML，100% 可靠。
     // ═══════════════════════════════════════════════════════
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
-    // 推算当前学期：9-12 月=秋季(3)，1-7 月=春季(12)
-    const term = month >= 9 ? '3' : '12';
-    const yearStr = month >= 9 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
+    try {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1;
+      const term = month >= 9 ? '3' : '12';
+      const yearStr = month >= 9 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
 
-    const body = `xnm=${encodeURIComponent(yearStr)}&xqm=${encodeURIComponent(term)}&captcha_value=`;
-    const url = `${JW_BASE}/kbcx/xskbcx_cxXsKb.html`;
-    console.info(`[StudentInfo] Trying timetable API: ${url}, body: ${body}`);
+      const body = `xnm=${encodeURIComponent(yearStr)}&xqm=${encodeURIComponent(term)}&captcha_value=`;
+      const url = `${JW_BASE}/kbcx/xskbcx_cxXsKb.html`;
+      console.info(`[StudentInfo] Trying timetable API: ${url}, body: ${body}`);
 
-    const resp = await httpPost(url, body, 'application/x-www-form-urlencoded', {
-      'X-Requested-With': 'XMLHttpRequest',
-      'Referer': `${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html`
-    });
+      const resp = await httpPost(url, body, 'application/x-www-form-urlencoded', {
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': `${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html`
+      });
 
-    if (resp.responseCode === 200) {
-      const raw = resp.result as string;
-      // 如果返回 JSON（包含 kbList），尝试解析学号
-      if (!raw.trimStart().startsWith('<')) {
-        try {
-          const data = JSON.parse(raw) as CourseScheduleResponseWithId;
-          const studentId = (data.xh as string) ?? '';
-          if (studentId.length > 0) {
-            savedStudentId = studentId;
-            console.info(`[StudentInfo] Extracted from timetable API: ${studentId}`);
-            return { success: true, studentId, name: '', college: '' };
+      if (resp.responseCode === 200) {
+        const raw = resp.result as string;
+        if (!raw.trimStart().startsWith('<')) {
+          try {
+            const data = JSON.parse(raw) as CourseScheduleResponseWithId;
+            const studentId = (data.xh as string) ?? '';
+            if (studentId.length > 0) {
+              savedStudentId = studentId;
+              console.info(`[StudentInfo] Extracted from timetable API: ${studentId}`);
+            }
+          } catch {
+            console.warn('[StudentInfo] Timetable response JSON parse failed');
           }
-        } catch {
-          // JSON 解析失败，继续兜底方案
-          console.warn('[StudentInfo] Timetable response JSON parse failed');
+        } else {
+          console.warn('[StudentInfo] Timetable API returned HTML (session invalid)');
         }
-      } else {
-        console.warn('[StudentInfo] Timetable API returned HTML (session invalid)');
       }
-    } else {
-      console.warn(`[StudentInfo] Timetable API HTTP ${resp.responseCode}`);
+    } catch (e) {
+      console.warn(`[StudentInfo] Timetable API failed: ${(e as Error).message}, continuing to HTML fallback...`);
     }
 
     // ═══════════════════════════════════════════════════════
-    // 兜底方案：从首页 HTML 正则提取学号
+    // 次优方案：从首页 HTML 提取完整学生信息
     // ═══════════════════════════════════════════════════════
-    console.info('[StudentInfo] Trying fallback: index page HTML...');
-    const url1 = `${JW_BASE}/xtgl/index_initMenu.html?gnmkdm=N300001&layout=default`;
-    const htmlResp = await httpGet(url1);
-    console.info(`[StudentInfo] Index page response code: ${htmlResp.responseCode}`);
+    try {
+      console.info('[StudentInfo] Trying index page HTML for full info...');
+      const indexUrl = `${JW_BASE}/xtgl/index_initMenu.html?gnmkdm=N300001&layout=default`;
+      const htmlResp = await httpGet(indexUrl, undefined, undefined, 5000);
+      console.info(`[StudentInfo] Index page response code: ${htmlResp.responseCode}`);
 
-    if (htmlResp.responseCode === 200) {
-      const html = htmlResp.result as string;
-
-      // 会话失效检测
-      if (html.includes('name="execution"') || html.includes('cas/login')) {
-        console.warn('[StudentInfo] Session invalid (login form detected)');
-        return { success: false, studentId: '', name: '', college: '' };
-      }
-
-      // 多种正则提取学号
-      const patterns = [
-        /xh['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
-        /usercode['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
-        /xhdm['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
-        /studentId['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
-        /学号[：:]\s*([^<\s]+)/,
-      ];
-
-      for (const pattern of patterns) {
-        const match = html.match(pattern);
-        if (match && match[1] && match[1].length >= 6) {
-          const studentId = match[1];
-          console.info(`[StudentInfo] Found from HTML: ${studentId}`);
-          savedStudentId = studentId;
-          return { success: true, studentId, name: '', college: '' };
+      if (htmlResp.responseCode === 200) {
+        const html = htmlResp.result as string;
+        const info = extractStudentInfoFromHtml(html);
+        if (info) {
+          if (info.studentId.length > 0) {
+            savedStudentId = info.studentId;
+          } else if (savedStudentId.length > 0) {
+            info.studentId = savedStudentId;
+          }
+          cachedStudentInfo = info;
+          console.info(`[StudentInfo] Found from HTML: id=${info.studentId}, name=${info.name}, college=${info.college}`);
+          return info;
         }
       }
+    } catch (e) {
+      console.warn(`[StudentInfo] Index page failed: ${(e as Error).message}`);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // 兜底：只返回学号
+    // ═══════════════════════════════════════════════════════
+    if (savedStudentId.length > 0) {
+      const fallback: StudentInfo = { success: true, studentId: savedStudentId, name: '', college: '', major: '', grade: '' };
+      cachedStudentInfo = fallback;
+      return fallback;
     }
 
     console.warn('[StudentInfo] All methods failed');
-    return { success: false, studentId: '', name: '', college: '' };
+    return { success: false, studentId: '', name: '', college: '', major: '', grade: '' };
   } catch (e) {
-    console.error(`[StudentInfo] Error: ${(e as Error).message}`);
-    return { success: false, studentId: '', name: '', college: '' };
+    console.error(`[StudentInfo] Unexpected error: ${(e as Error).message}`);
+    if (savedStudentId.length > 0) {
+      return { success: true, studentId: savedStudentId, name: '', college: '', major: '', grade: '' };
+    }
+    return { success: false, studentId: '', name: '', college: '', major: '', grade: '' };
   }
 }
 
@@ -541,6 +648,7 @@ export async function login(studentId: string, password: string): Promise<LoginR
     // 优先：如果自动跟随到了教务系统，直接拿到 JW cookies
     const jsessionid = authCookieMap.get('JSESSIONID') ?? '';
     const route = authCookieMap.get('route') ?? '';
+
     if (jsessionid.length > 0) {
       const jwCookies = route.length > 0
         ? `JSESSIONID=${jsessionid}; route=${route}`
