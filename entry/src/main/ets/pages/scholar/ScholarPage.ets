@@ -1,10 +1,11 @@
 // ScholarPage.ets - 学业信息主页
 
+import http from '@ohos.net.http';
 import { Semester, GpaInfo } from '../../model/Semester';
 import { Todo, Course } from '../../model/Course';
 import { AppKeys } from '../Index';
 import { TwoLineCard, RoundRectangleCardWithForehead, SearchBar, EmptyView, LoadingView } from '../../components/CommonComponents';
-import { fetchSemesters, fetchGrades, fetchCourseSchedule, fetchExams, fetchTodos, fetchStudentInfo, getCachedStudentInfo, StudentInfo, setCachedStudentInfo } from '../../service/NetworkService';
+import { fetchSemesters, fetchGrades, fetchCourseSchedule, fetchExams, fetchTodos, fetchStudentInfo, getCachedStudentInfo, StudentInfo, setCachedStudentInfo, JW_BASE } from '../../service/NetworkService';
 import { StorageService } from '../../service/StorageService';
 import common from '@ohos.app.ability.common';
 
@@ -17,22 +18,27 @@ interface CourseScheduleParam {
   isFirstHalf: boolean;
 }
 
+interface GradeDetailNavParam {
+  semesterIndex: number;
+}
+
 @Component
 export struct ScholarPage {
   navStack: NavPathStack = new NavPathStack();
-  @StorageLink(AppKeys.SEMESTERS) semesters: Semester[] = [];
+  @StorageLink(AppKeys.SEMESTERS) @Watch('onSemestersChanged') semesters: Semester[] = [];
   @StorageLink(AppKeys.IS_GRS) isGrs: boolean = false;
   @StorageLink(AppKeys.HIDE_GPA) hideGpa: boolean = false;
   @StorageLink(AppKeys.IS_LOGGED_IN) @Watch('onLoginStateChanged') isLoggedIn: boolean = false;
   @StorageLink(AppKeys.LAST_UPDATE) lastUpdate: number = 0;
   @StorageLink(AppKeys.STUDENT_INFO) studentInfoStr: string = '';
   @StorageLink(AppKeys.USERNAME) username: string = '';
-  @State semesterIndex: number = 0;
+  @StorageLink(AppKeys.CURRENT_SEMESTER_INDEX) semesterIndex: number = 0;
   @State isRefreshing: boolean = false;
   @State errorMessage: string = '';
   @State updateTimeLabel: string = '';
-  @State isInitialFetchDone: boolean = false;
+  @StorageLink(AppKeys.IS_INITIAL_FETCH_DONE) isInitialFetchDone: boolean = false;
   @State currentSemesterDataLoaded: boolean = false;
+  @State hasAnyData: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
   private storageService: StorageService | null = null;
@@ -61,10 +67,13 @@ export struct ScholarPage {
       this.updateTimeLabel = this.computeUpdateLabel();
     }, 30000);
 
-    // 设置初始学期索引为最新学期（边界保护）
-    const semLen = (this.semesters ?? []).length;
-    if (semLen > 0) {
-      this.semesterIndex = semLen - 1;
+    // 确保 semesterIndex 在有效范围内（不强制重置为最新，保留用户选择）
+    const sems = this.semesters ?? [];
+    if (sems.length > 0) {
+      if (this.semesterIndex < 0 || this.semesterIndex >= sems.length) {
+        this.semesterIndex = sems.length - 1;
+      }
+      this.updateHasAnyData();
     }
 
     // 首次进入时检查是否需要获取当前学期数据
@@ -77,13 +86,8 @@ export struct ScholarPage {
     if (this.updateLabelTimer !== -1) {
       clearInterval(this.updateLabelTimer);
     }
-  }
-
-  private onLoginStateChanged(): void {
-    if (this.isLoggedIn && !this.isInitialFetchDone && (this.semesters ?? []).length === 0 && !this.isRefreshing) {
-      console.info('[ScholarPage] Login state changed to true, triggering data fetch...');
-      this.fetchData();
-    }
+    // 持久化当前学期索引
+    this.storageService?.saveNumber('semester_index', this.semesterIndex);
   }
 
   private computeUpdateLabel(): string {
@@ -104,6 +108,15 @@ export struct ScholarPage {
     return sems[idx] ?? null;
   }
 
+  /** 安全获取当前学期的 GPA 信息（防止反序列化后 gpaInfo 为 undefined） */
+  private get safeGpaInfo(): GpaInfo {
+    const sem = this.currentSemester;
+    if (sem !== null && sem !== undefined && sem.gpaInfo !== undefined && sem.gpaInfo !== null) {
+      return sem.gpaInfo;
+    }
+    return new GpaInfo();
+  }
+
   private formatGpa(value: number): string {
     if (this.hideGpa) return '***';
     if (value <= 0) return '-';
@@ -113,6 +126,31 @@ export struct ScholarPage {
   private formatCredits(value: number): string {
     if (value <= 0) return '-';
     return value.toFixed(1);
+  }
+
+  private triggerFetchCurrentSemester(): void {
+    const sem = this.currentSemester;
+    if (sem !== null && sem !== undefined) {
+      this.fetchCurrentSemesterData(sem);
+    }
+  }
+
+  private getGradeDetailNavParam(): GradeDetailNavParam {
+    return { semesterIndex: this.semesterIndex };
+  }
+
+  private getCourseListNavParam(): SemesterIdParam {
+    const sem = this.currentSemester;
+    return { semesterId: sem !== null && sem !== undefined ? sem.id : '' };
+  }
+
+  private getExamListNavParam(): SemesterIdParam {
+    const sem = this.currentSemester;
+    return { semesterId: sem !== null && sem !== undefined ? sem.id : '' };
+  }
+
+  private getCourseScheduleNavParam(sem: Semester, isFirst: boolean): CourseScheduleParam {
+    return { semesterId: sem.id, isFirstHalf: isFirst };
   }
 
   // 检查当前学期是否有数据，如果没有则获取
@@ -129,6 +167,91 @@ export struct ScholarPage {
     }
   }
 
+  /** 更新 hasAnyData 状态（在 semesters 变化时调用） */
+  private updateHasAnyData(): void {
+    const sems = this.semesters ?? [];
+    let found = false;
+    for (let i = 0; i < sems.length; i++) {
+      const s = sems[i];
+      if (s.courses !== undefined && s.courses !== null && s.courses.length > 0) {
+        found = true;
+        break;
+      }
+    }
+    this.hasAnyData = found;
+  }
+
+  /** 快速检测是否在校内网（教务系统是否可达），约 3 秒超时 */
+  private async testCampusNetworkQuick(): Promise<boolean> {
+    const req = http.createHttp();
+    try {
+      // 注意：JW_BASE = 'https://zdbk.zju.edu.cn/jwglxt'，不需要再加 /jwglxt
+      // 之前写成 ${JW_BASE}/jwglxt 导致 URL 错误为 /jwglxt/jwglxt，返回 404
+      const resp = await req.request(`${JW_BASE}`, {
+        method: http.RequestMethod.GET,
+        header: { 'Connection': 'close' },
+        connectTimeout: 3000,
+        readTimeout: 3000
+        // 使用系统默认 DNS，不强制公网 DNS
+      });
+      const isReachable = resp.responseCode === 200 || resp.responseCode === 302 || resp.responseCode === 301;
+      console.info(`[ScholarPage] Campus network test: ${JW_BASE} → ${resp.responseCode}, reachable=${isReachable}`);
+      return isReachable;
+    } catch (e) {
+      console.warn(`[ScholarPage] Campus network test failed: ${(e as Error).message}`);
+      return false;
+    } finally {
+      req.destroy();
+    }
+  }
+
+  // 并行获取单个学期的数据（用于 fetchData 批量刷新）
+  private async fetchSemesterDataParallel(sem: Semester, timeoutMs?: number): Promise<void> {
+    console.info(`[ScholarPage] Parallel fetching: ${sem.id}, timeout=${timeoutMs ?? 15000}ms`);
+    try {
+      const results = await Promise.all([
+        fetchGrades(sem.id, timeoutMs),
+        fetchCourseSchedule(sem.id, timeoutMs),
+        fetchExams(sem.id, timeoutMs),
+        fetchTodos(sem.id, timeoutMs)
+      ]);
+      const gradesResult = results[0];
+      const scheduleResult = results[1];
+      const examsResult = results[2];
+      const todosResult = results[3];
+
+      console.info(`[ScholarPage] ${sem.id} raw results: grades.success=${gradesResult.success} len=${gradesResult.data?.length ?? 0} msg="${gradesResult.message}", schedule.success=${scheduleResult.success} len=${scheduleResult.data?.length ?? 0} msg="${scheduleResult.message}", exams.success=${examsResult.success} len=${examsResult.data?.length ?? 0}, todos.success=${todosResult.success} len=${todosResult.data?.length ?? 0}`);
+
+      if (gradesResult.success && gradesResult.data && gradesResult.data.length > 0) {
+        sem.courses = gradesResult.data;
+        console.info(`[ScholarPage] ${sem.id}: set ${gradesResult.data.length} courses from grades`);
+      } else if (!gradesResult.success) {
+        console.warn(`[ScholarPage] ${sem.id}: grades fetch failed: ${gradesResult.message}`);
+      }
+      if (scheduleResult.success && scheduleResult.data && scheduleResult.data.length > 0) {
+        for (const schedCourse of scheduleResult.data) {
+          const existing = sem.courses.find(c => c.courseId === schedCourse.courseId);
+          if (existing) {
+            existing.timeSlots = schedCourse.timeSlots;
+          } else {
+            sem.courses.push(schedCourse);
+          }
+        }
+        console.info(`[ScholarPage] ${sem.id}: merged ${scheduleResult.data.length} schedule courses, total=${sem.courses.length}`);
+      } else if (!scheduleResult.success) {
+        console.warn(`[ScholarPage] ${sem.id}: schedule fetch failed: ${scheduleResult.message}`);
+      }
+      if (examsResult.success && examsResult.data && examsResult.data.length > 0) {
+        sem.exams = examsResult.data;
+      }
+      if (todosResult.success && todosResult.data && todosResult.data.length > 0) {
+        sem.todos = todosResult.data;
+      }
+    } catch (e) {
+      console.warn(`[ScholarPage] Failed to fetch data for ${sem.id}: ${(e as Error).message}`);
+    }
+  }
+
   // 获取当前学期的数据（成绩、课表等）
   private async fetchCurrentSemesterData(sem: Semester): Promise<void> {
     console.info(`[ScholarPage] Fetching data for semester: ${sem.id}`);
@@ -136,11 +259,14 @@ export struct ScholarPage {
     this.errorMessage = '';
 
     try {
+      const isCampus = await this.testCampusNetworkQuick();
+      const apiTimeout = isCampus ? 15000 : 8000;
+
       const results = await Promise.all([
-        fetchGrades(sem.id),
-        fetchCourseSchedule(sem.id),
-        fetchExams(sem.id),
-        fetchTodos(sem.id)
+        fetchGrades(sem.id, apiTimeout),
+        fetchCourseSchedule(sem.id, apiTimeout),
+        fetchExams(sem.id, apiTimeout),
+        fetchTodos(sem.id, apiTimeout)
       ]);
 
       const gradesResult = results[0];
@@ -181,6 +307,10 @@ export struct ScholarPage {
 
       this.currentSemesterDataLoaded = true;
       console.info(`[ScholarPage] Semester data fetch completed`);
+
+      if ((sem.courses?.length ?? 0) === 0 && !isCampus) {
+        this.errorMessage = '当前不在校园网，无法获取教务数据。请连接校园 VPN 或在校园网环境下使用。';
+      }
     } catch (err) {
       console.error(`[ScholarPage] Semester data fetch error: ${(err as Error).message}`);
       this.errorMessage = '获取学期数据失败，请下拉刷新';
@@ -202,10 +332,14 @@ export struct ScholarPage {
     this.errorMessage = '';
 
     try {
-      // 获取学期列表（若 HTML 解析失败会自动使用日期兜底方案）
-      console.info('[ScholarPage] Fetching semesters...');
-      const semResult = await fetchSemesters();
+      // 并行获取学期列表 + 检测网络环境，节省等待时间
+      console.info('[ScholarPage] Fetching semesters and testing network...');
+      const GeneratedDestructArray_1 = await Promise.all([
+        fetchSemesters(),
+        this.testCampusNetworkQuick()
+      ]);const semResult = GeneratedDestructArray_1[0];const isCampusNetwork = GeneratedDestructArray_1[1];
       console.info(`[ScholarPage] Semester result: success=${semResult.success}, count=${semResult.data?.length ?? 0}, msg=${semResult.message}`);
+      console.info(`[ScholarPage] Campus network: ${isCampusNetwork}`);
 
       if (!semResult.success || !semResult.data || semResult.data.length === 0) {
         this.errorMessage = semResult.message || '无法获取学期列表';
@@ -237,53 +371,26 @@ export struct ScholarPage {
         }
       }
 
-      // 获取最近 8 个学期的数据（4 年，约 8 学期）
-      // 避免一次请求太多学期导致超时，分批获取
-      const semestersToFetch = candidateSemesters.slice(-8);
-      console.info(`[ScholarPage] Fetching data for ${semestersToFetch.length} recent semesters`);
+      // 获取最近 2 个学期的数据（当前学期 + 上一学期）
+      // 校外网环境下使用短超时（8秒）+ 不重试，避免长时间 loading
+      const apiTimeout = isCampusNetwork ? 15000 : 8000;
+      console.info(`[ScholarPage] API timeout: ${apiTimeout}ms`);
 
+      const semestersToFetch = candidateSemesters.slice(-2);
+      console.info(`[ScholarPage] Fetching data for ${semestersToFetch.length} recent semesters (parallel)`);
+
+      // 并行获取所有需要获取的学期数据
+      const fetchPromises: Promise<void>[] = [];
       for (const sem of semestersToFetch) {
-        console.info(`[ScholarPage] Fetching: ${sem.id}`);
-        try {
-          const GeneratedDestructArray_1 = await Promise.all([
-            fetchGrades(sem.id),
-            fetchCourseSchedule(sem.id),
-            fetchExams(sem.id),
-            fetchTodos(sem.id)
-          ]);
-          const gradesResult =
-            GeneratedDestructArray_1[0];
-          const scheduleResult =
-              GeneratedDestructArray_1[1];
-          const examsResult =
-                GeneratedDestructArray_1[2];
-          const todosResult =
-                  GeneratedDestructArray_1[3];
+        const p = this.fetchSemesterDataParallel(sem, apiTimeout);
+        fetchPromises.push(p);
+      }
+      await Promise.all(fetchPromises);
+      console.info('[ScholarPage] Parallel semester fetch completed');
 
-          if (gradesResult.success && gradesResult.data && gradesResult.data.length > 0) {
-            sem.courses = gradesResult.data;
-            console.info(`[ScholarPage] ${sem.id}: got ${gradesResult.data.length} grades`);
-          }
-          if (scheduleResult.success && scheduleResult.data && scheduleResult.data.length > 0) {
-            for (const schedCourse of scheduleResult.data) {
-              const existing = sem.courses.find(c => c.courseId === schedCourse.courseId);
-              if (existing) {
-                existing.timeSlots = schedCourse.timeSlots;
-              } else {
-                sem.courses.push(schedCourse);
-              }
-            }
-            console.info(`[ScholarPage] ${sem.id}: got ${scheduleResult.data.length} schedule courses`);
-          }
-          if (examsResult.success && examsResult.data && examsResult.data.length > 0) {
-            sem.exams = examsResult.data;
-          }
-          if (todosResult.success && todosResult.data && todosResult.data.length > 0) {
-            sem.todos = todosResult.data;
-          }
-        } catch (e) {
-          console.warn(`[ScholarPage] Failed to fetch data for ${sem.id}: ${(e as Error).message}`);
-        }
+      // 打印每个待获取学期的最终数据量
+      for (const sem of semestersToFetch) {
+        console.info(`[ScholarPage] Semester ${sem.id} final state: ${sem.courses?.length ?? 0} courses, ${sem.exams?.length ?? 0} exams, ${sem.todos?.length ?? 0} todos`);
       }
 
       // 计算当前（最新）学期的 GPA
@@ -293,18 +400,33 @@ export struct ScholarPage {
         this.currentSemesterDataLoaded = true;
       }
 
+      // 检查是否获取到了任何课程数据
+      const fetchedAnyData = semestersToFetch.some((s: Semester) => (s.courses?.length ?? 0) > 0);
+      if (!fetchedAnyData && !isCampusNetwork) {
+        this.errorMessage = '当前不在校园网，无法获取教务数据。请连接校园 VPN 或在校园网环境下使用。';
+        console.warn('[ScholarPage] No data fetched and not on campus network');
+      } else if (!fetchedAnyData) {
+        this.errorMessage = '未能获取到课程数据，请稍后重试。';
+        console.warn('[ScholarPage] No data fetched despite being on campus network');
+      }
+
       // 更新学期列表（默认选中最新学期）
       const updatedSemesters = candidateSemesters;
 
       AppStorage.set(AppKeys.SEMESTERS, updatedSemesters);
-      this.semesterIndex = Math.max(0, updatedSemesters.length - 1);
+      // semesterIndex 由 @StorageLink 自动持久化到 AppStorage
+      // 确保指向最新学期（如果当前超出范围）
+      if (this.semesterIndex < 0 || this.semesterIndex >= updatedSemesters.length) {
+        this.semesterIndex = Math.max(0, updatedSemesters.length - 1);
+      }
 
       const ts = Date.now();
       AppStorage.set(AppKeys.LAST_UPDATE, ts);
       await this.storageService?.saveSemesters(updatedSemesters);
+      await this.storageService?.saveNumber('semester_index', this.semesterIndex);
 
       console.info(`[ScholarPage] Data fetch completed, saved ${updatedSemesters.length} semesters`);
-      this.isInitialFetchDone = true;
+      AppStorage.set(AppKeys.IS_INITIAL_FETCH_DONE, true);
 
       // 在后台异步获取学生信息（不阻塞主流程）
       fetchStudentInfo().then((info) => {
@@ -313,6 +435,10 @@ export struct ScholarPage {
           AppStorage.set(AppKeys.STUDENT_INFO, JSON.stringify(info));
           this.storageService?.saveString('student_info', JSON.stringify(info));
           console.info(`[ScholarPage] Student info updated: ${info.name}`);
+        } else if (info.success && info.studentId.length > 0 && !isCampusNetwork) {
+          // 校外网只能拿到学号，也保存下来
+          setCachedStudentInfo(info);
+          console.info(`[ScholarPage] Student info partial update: ${info.studentId}`);
         }
       }).catch((e: Error) => {
         console.warn(`[ScholarPage] Failed to fetch student info: ${e.message}`);
@@ -424,27 +550,27 @@ export struct ScholarPage {
           // 6个统计卡片
           Grid() {
             GridItem() {
-              TwoLineCard({ title: '五分制GPA', value: this.formatGpa(this.currentSemester!.gpaInfo.fivePointGpa) })
+              TwoLineCard({ title: '五分制GPA', value: this.formatGpa(this.safeGpaInfo.fivePointGpa) })
                 .padding(12)
             }
             GridItem() {
-              TwoLineCard({ title: '获得学分', value: this.formatCredits(this.currentSemester!.gpaInfo.totalCredits) })
+              TwoLineCard({ title: '获得学分', value: this.formatCredits(this.safeGpaInfo.totalCredits) })
                 .padding(12)
             }
             GridItem() {
-              TwoLineCard({ title: '四分制GPA', value: this.formatGpa(this.currentSemester!.gpaInfo.fourThreeGpa) })
+              TwoLineCard({ title: '四分制GPA', value: this.formatGpa(this.safeGpaInfo.fourThreeGpa) })
                 .padding(12)
             }
             GridItem() {
-              TwoLineCard({ title: '主修均绩', value: this.formatGpa(this.currentSemester!.gpaInfo.majorGpa) })
+              TwoLineCard({ title: '主修均绩', value: this.formatGpa(this.safeGpaInfo.majorGpa) })
                 .padding(12)
             }
             GridItem() {
-              TwoLineCard({ title: '主修学分', value: this.formatCredits(this.currentSemester!.gpaInfo.majorCredits) })
+              TwoLineCard({ title: '主修学分', value: this.formatCredits(this.safeGpaInfo.majorCredits) })
                 .padding(12)
             }
             GridItem() {
-              TwoLineCard({ title: '百分制', value: this.formatGpa(this.currentSemester!.gpaInfo.percentageGpa) })
+              TwoLineCard({ title: '百分制', value: this.formatGpa(this.safeGpaInfo.percentageGpa) })
                 .padding(12)
             }
           }
@@ -453,12 +579,11 @@ export struct ScholarPage {
           .rowsGap(0)
           .padding({ left: 8, right: 8, bottom: 8 })
           .onClick(() => {
-            const param: Record<string, ESObject> = { "semesterIndex": this.semesterIndex } as Record<string, ESObject>;
-            this.navStack.pushPathByName('GradeDetail', param);
+            this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
           })
 
           // 成绩列表
-          if (this.currentSemester!.courses.filter((c: Course) => c.hasGrade).length > 0) {
+          if ((this.currentSemester?.courses?.length ?? 0) > 0 && this.currentSemester!.courses.filter((c: Course) => c.hasGrade).length > 0) {
             Divider().strokeWidth(0.5).color($r('app.color.progress_bg')).margin({ left: 16, right: 16 })
             Column() {
               ForEach(
@@ -495,8 +620,7 @@ export struct ScholarPage {
             .width('100%')
             .alignItems(HorizontalAlign.Start)
             .onClick(() => {
-              const param: Record<string, ESObject> = { "semesterIndex": this.semesterIndex } as Record<string, ESObject>;
-              this.navStack.pushPathByName('GradeDetail', param);
+              this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
             })
           }
         }
@@ -516,14 +640,12 @@ export struct ScholarPage {
       }) {
         Column({ space: 0 }) {
           Row() {
-            this.StatCard('课程', this.currentSemester!.courses.length.toString(), () => {
-              const param: SemesterIdParam = { semesterId: this.currentSemester!.id };
-              this.navStack.pushPathByName('CourseList', param);
+            this.StatCard('课程', this.currentSemester.courses.length.toString(), () => {
+              this.navStack.pushPathByName('CourseList', this.getCourseListNavParam());
             })
-            this.StatCard('学分', this.currentSemester!.gpaInfo.totalCredits.toFixed(1), () => {})
-            this.StatCard('考试', this.currentSemester!.exams.length.toString(), () => {
-              const param: SemesterIdParam = { semesterId: this.currentSemester!.id };
-              this.navStack.pushPathByName('ExamList', param);
+            this.StatCard('学分', this.safeGpaInfo.totalCredits.toFixed(1), () => {})
+            this.StatCard('考试', this.currentSemester.exams.length.toString(), () => {
+              this.navStack.pushPathByName('ExamList', this.getExamListNavParam());
             })
           }
           .width('100%')
@@ -566,8 +688,7 @@ export struct ScholarPage {
     .borderRadius(12)
     .backgroundColor($r('app.color.app_background'))
     .onClick(() => {
-      const param: CourseScheduleParam = { semesterId: sem.id, isFirstHalf: isFirst };
-      this.navStack.pushPathByName('CourseSchedule', param);
+      this.navStack.pushPathByName('CourseSchedule', this.getCourseScheduleNavParam(sem, isFirst));
     })
   }
 
@@ -582,13 +703,13 @@ export struct ScholarPage {
       }) {
         Column({ space: 0 }) {
           Row() {
-            this.StatCard('总计', this.currentSemester!.todos.length.toString(), () => {})
-            this.StatCard('今日', this.currentSemester!.todos.filter((t: Todo) => t.dueTime <= new Date(new Date().getTime() + 86400000)).length.toString(), () => {})
-            this.StatCard('本周', this.currentSemester!.todos.filter((t: Todo) => t.dueTime <= new Date(new Date().getTime() + 7 * 86400000)).length.toString(), () => {})
+            this.StatCard('总计', this.currentSemester.todos.length.toString(), () => {})
+            this.StatCard('今日', this.currentSemester.todos.filter((t: Todo) => t.dueTime.getTime() <= Date.now() + 86400000).length.toString(), () => {})
+            this.StatCard('本周', this.currentSemester.todos.filter((t: Todo) => t.dueTime.getTime() <= Date.now() + 7 * 86400000).length.toString(), () => {})
           }
           .padding({ left: 12, right: 12, top: 12, bottom: 8 })
 
-          if (this.currentSemester!.todos.length > 0) {
+          if ((this.currentSemester?.todos?.length ?? 0) > 0) {
             Scroll() {
               Row({ space: 10 }) {
                 ForEach(this.currentSemester!.todos.sort((a: Todo, b: Todo) => a.dueTime.getTime() - b.dueTime.getTime()).slice(0, 6), (todo: Todo) => {
@@ -646,9 +767,9 @@ export struct ScholarPage {
         title: '实践学分'
       }) {
         Row() {
-          this.StatCard('二课分', this.currentSemester!.gpaInfo.secondCredit.toFixed(1), () => {})
-          this.StatCard('三课分', this.currentSemester!.gpaInfo.thirdCredit.toFixed(1), () => {})
-          this.StatCard('四课分', this.currentSemester!.gpaInfo.fourthCredit.toFixed(1), () => {})
+          this.StatCard('二课分', this.safeGpaInfo.secondCredit.toFixed(1), () => {})
+          this.StatCard('三课分', this.safeGpaInfo.thirdCredit.toFixed(1), () => {})
+          this.StatCard('四课分', this.safeGpaInfo.fourthCredit.toFixed(1), () => {})
         }
         .padding({ left: 12, right: 12, top: 12, bottom: 12 })
       }
@@ -717,7 +838,7 @@ export struct ScholarPage {
       .borderRadius(16)
       .margin({ bottom: 4 })
     } else if (this.isLoggedIn) {
-      // 简化版：只有学号
+      // 简化版：学号 + 网络提示
       Row({ space: 12 }) {
         Column() {
           Text('👤')
@@ -734,9 +855,9 @@ export struct ScholarPage {
             .fontSize(16)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
-          Text('已登录')
+          Text('姓名/学院信息需校园网环境获取')
             .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
+            .fontColor($r('app.color.text_tertiary'))
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
@@ -815,18 +936,18 @@ export struct ScholarPage {
           actionText: '去登录',
           onAction: () => this.navStack.pushPathByName('Login', null)
         })
-      } else if ((this.semesters.length === 0 && this.errorMessage.length === 0) || (this.isRefreshing && !this.isInitialFetchDone)) {
-        // 正在加载（仅在首次加载且没有数据时显示）
+      } else if ((this.semesters.length === 0 && this.errorMessage.length === 0) || (this.isRefreshing && !this.hasAnyData)) {
+        // 正在加载（仅在没有任何学期数据时显示；有缓存数据时直接显示内容）
         Column() {
           Blank()
           LoadingView({ message: '正在加载学业数据...' })
           Blank()
         }
         .onAppear(() => {
-          // 延迟执行，确保 UI 先渲染
+          // 延迟执行，确保 UI 先渲染；仅在确实没有数据且未在刷新时触发
           setTimeout(() => {
-            if (!this.isInitialFetchDone && !this.isRefreshing) {
-              console.info('[ScholarPage] Triggering initial data fetch...');
+            if (!this.hasAnyData && !this.isRefreshing && this.isLoggedIn) {
+              console.info('[ScholarPage] No cached data, triggering initial fetch...');
               this.fetchData();
             }
           }, 100);
@@ -838,7 +959,7 @@ export struct ScholarPage {
           Scroll() {
             Column({ space: 16 }) {
               // 错误提示
-              if (this.errorMessage.length > 0 && (this.currentSemester === null || this.currentSemester.courses.length === 0)) {
+              if (this.errorMessage.length > 0 && (this.currentSemester === null || this.currentSemester === undefined || (this.currentSemester !== null && this.currentSemester !== undefined && (this.currentSemester.courses?.length ?? 0) === 0))) {
                 Column({ space: 12 }) {
                   Text(this.errorMessage)
                     .fontSize(14)
@@ -859,7 +980,7 @@ export struct ScholarPage {
               this.StudentInfoCard()
 
               // 当前学期数据卡片
-              if (this.currentSemester) {
+              if (this.currentSemester !== null && this.currentSemester !== undefined) {
                 // 显示学期信息
                 Row() {
                   Text(this.currentSemester.name)
@@ -867,11 +988,11 @@ export struct ScholarPage {
                     .fontColor($r('app.color.text_secondary'))
                     .fontWeight(FontWeight.Medium)
                   Blank()
-                  if (this.currentSemester.courses.length === 0 && !this.isRefreshing) {
+                  if (this.currentSemester !== null && this.currentSemester !== undefined && (this.currentSemester.courses?.length ?? 0) === 0 && !this.isRefreshing) {
                     Text('点击刷新获取数据')
                       .fontSize(12)
                       .fontColor($r('app.color.color_blue'))
-                      .onClick(() => this.fetchCurrentSemesterData(this.currentSemester!))
+                      .onClick(() => this.triggerFetchCurrentSemester())
                   }
                 }
                 .padding({ left: 4, right: 4, bottom: 4 })
@@ -886,7 +1007,7 @@ export struct ScholarPage {
               }
 
               // 空数据提示
-              if (this.currentSemester?.courses.length === 0 && !this.isRefreshing && this.errorMessage.length === 0) {
+              if (this.currentSemester !== null && this.currentSemester !== undefined && (this.currentSemester.courses?.length ?? 0) === 0 && !this.isRefreshing && this.errorMessage.length === 0) {
                 Column({ space: 12 }) {
                   Text('暂无数据')
                     .fontSize(16)
@@ -917,5 +1038,40 @@ export struct ScholarPage {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.app_background'))
+  }
+  private onSemestersChanged(): void {
+    const sems = this.semesters ?? [];
+    const semLen = sems.length;
+    // 更新 hasAnyData 状态
+    this.updateHasAnyData();
+    // 确保 semesterIndex 在有效范围内
+    if (semLen > 0) {
+      if (this.semesterIndex < 0 || this.semesterIndex >= semLen) {
+        this.semesterIndex = semLen - 1;
+        console.info(`[ScholarPage] semesters updated, auto-corrected index to: ${this.semesterIndex}`);
+      }
+    }
+  }
+
+  private onLoginStateChanged(): void {
+    const sems = this.semesters ?? [];
+    if (this.isLoggedIn && !this.isInitialFetchDone && sems.length === 0 && !this.isRefreshing) {
+      console.info('[ScholarPage] Login state changed to true, triggering data fetch...');
+      this.fetchData();
+    }
+  }
+
+  onPageShow(): void {
+    console.info(`[ScholarPage] onPageShow: semesters=${(this.semesters ?? []).length}, index=${this.semesterIndex}, hasAnyData=${this.hasAnyData}`);
+    const sems = this.semesters ?? [];
+    if (sems.length > 0) {
+      // 确保 semesterIndex 指向有效学期
+      const validIndex = Math.min(Math.max(0, this.semesterIndex), sems.length - 1);
+      if (this.semesterIndex !== validIndex) {
+        this.semesterIndex = validIndex;
+        console.info(`[ScholarPage] onPageShow corrected semesterIndex to ${validIndex}`);
+      }
+      this.updateHasAnyData();
+    }
   }
 }

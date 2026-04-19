@@ -8,14 +8,25 @@ import { AppKeys } from './Index';
 
 @Component
 export struct SearchPage {
-  @StorageLink(AppKeys.SEMESTERS) semesters: Semester[] = [];
+  @StorageLink(AppKeys.SEMESTERS) @Watch('onSemestersChanged') semesters: Semester[] = [];
   @State searchWord: string = '';
   @State results: Course[] = [];
   private allCourses: Course[] = [];
   private pathStack: NavPathStack | null = null;
 
   aboutToAppear(): void {
-    // 汇总所有学期的课程
+    this.rebuildAllCourses();
+  }
+
+  private onSemestersChanged(): void {
+    this.rebuildAllCourses();
+    // 如果当前有搜索词，重新执行搜索
+    if (this.searchWord.length > 0) {
+      this.search(this.searchWord);
+    }
+  }
+
+  private rebuildAllCourses(): void {
     this.allCourses = [];
     for (const sem of this.semesters) {
       for (const course of sem.courses) {
@@ -24,6 +35,7 @@ export struct SearchPage {
         }
       }
     }
+    console.info(`[SearchPage] Rebuilt allCourses: ${this.allCourses.length} unique courses`);
   }
 
   private search(keyword: string): void {

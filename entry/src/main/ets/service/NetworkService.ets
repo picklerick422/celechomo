@@ -14,8 +14,9 @@ export const BASE_JW = 'https://zdbk.zju.edu.cn';
 export const BASE_ECARD = 'https://ecard.zju.edu.cn';
 export const CAS_BASE = 'https://zjuam.zju.edu.cn/cas';
 
-// 自定义 DNS 服务器配置（解决校内域名解析问题）
-const DNS_SERVERS = ['114.114.114.114', '223.5.5.5', '8.8.8.8'];
+// DNS 说明：不再强制指定公网 DNS，使用系统默认 DNS
+// 在校内网环境下，系统默认 DNS（校内 DNS）能正确解析校内域名
+// 强制使用公网 DNS 反而可能导致校内域名解析到错误 IP，造成连接超时
 
 export interface LoginResult {
   success: boolean;
@@ -167,8 +168,10 @@ async function httpGet(url: string, extraHeaders?: Record<string, string>,
       header: headers,
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
-      usingCache: false,
-      dnsServers: DNS_SERVERS
+      usingCache: false
+      // 注意：不指定 dnsServers，使用系统默认 DNS
+      // 在校内网环境下，系统默认 DNS（校内 DNS）能正确解析校内域名
+      // 指定公网 DNS 反而可能导致校内域名解析错误
     });
     console.info(`[httpGet] Response: ${response.responseCode}, length=${(response.result as string)?.length ?? 0}`);
     return response;
@@ -213,8 +216,8 @@ async function httpPost(url: string, body: string,
       extraData: requestBody,
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
-      usingCache: false,
-      dnsServers: DNS_SERVERS
+      usingCache: false
+      // 注意：不指定 dnsServers，使用系统默认 DNS
     });
     console.info(`[httpPost] Response: ${response.responseCode}, length=${(response.result as string)?.length ?? 0}`);
     return response;
@@ -710,13 +713,16 @@ export async function fetchSemesters(): Promise<FetchResult<Semester[]>> {
     // ═══════════════════════════════════════════════════════
     // 方案 1: ZJU 专用学期查询接口（最可靠）
     // POST /tjxl/tjcx_cxXnxqgl.html 返回 {items: [{xnm, xqm, xnmc}]} 格式
+    // 使用 6 秒短超时：校外网此接口必然超时，不必等待默认 15 秒
     // ═══════════════════════════════════════════════════════
     try {
       const resp = await httpPost(
         `${JW_BASE}/tjxl/tjcx_cxXnxqgl.html?doType=query`,
         `_=1`,
         'application/x-www-form-urlencoded',
-        { 'X-Requested-With': 'XMLHttpRequest' }
+        { 'X-Requested-With': 'XMLHttpRequest' },
+        undefined,
+        6000
       );
 
       if (resp.responseCode === 200) {
@@ -736,8 +742,9 @@ export async function fetchSemesters(): Promise<FetchResult<Semester[]>> {
 
     // ═══════════════════════════════════════════════════════
     // 方案 2: 从课表页 HTML 提取学期下拉框
+    // 使用 6 秒短超时
     // ═══════════════════════════════════════════════════════
-    const htmlResp = await httpGet(`${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default`);
+    const htmlResp = await httpGet(`${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default`, undefined, undefined, 6000);
     if (htmlResp.responseCode === 200) {
       const semesters = parseSemestersFromHtml(htmlResp.result as string);
       if (semesters.length > 0) {
@@ -761,8 +768,8 @@ export async function fetchSemesters(): Promise<FetchResult<Semester[]>> {
   }
 }
 
-export async function fetchGrades(semesterId: string): Promise<FetchResult<Course[]>> {
-  const maxRetries = 2;
+export async function fetchGrades(semesterId: string, timeoutMs?: number): Promise<FetchResult<Course[]>> {
+  const maxRetries = timeoutMs !== undefined && timeoutMs <= 10000 ? 0 : 2;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -778,7 +785,7 @@ export async function fetchGrades(semesterId: string): Promise<FetchResult<Cours
       const resp = await httpPost(url, body, 'application/x-www-form-urlencoded', {
         'X-Requested-With': 'XMLHttpRequest',
         'Referer': `${JW_BASE}/cxdy/xscjcx_cxXscjIndex.html`
-      });
+      }, undefined, timeoutMs);
 
       if (resp.responseCode !== 200) {
         console.warn(`[NetworkService] Grades response code: ${resp.responseCode}`);
@@ -813,8 +820,8 @@ export async function fetchGrades(semesterId: string): Promise<FetchResult<Cours
   return { success: false, message: '获取成绩失败' };
 }
 
-export async function fetchCourseSchedule(semesterId: string): Promise<FetchResult<Course[]>> {
-  const maxRetries = 2;
+export async function fetchCourseSchedule(semesterId: string, timeoutMs?: number): Promise<FetchResult<Course[]>> {
+  const maxRetries = timeoutMs !== undefined && timeoutMs <= 10000 ? 0 : 2;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -828,7 +835,7 @@ export async function fetchCourseSchedule(semesterId: string): Promise<FetchResu
       const resp = await httpPost(url, body, 'application/x-www-form-urlencoded', {
         'X-Requested-With': 'XMLHttpRequest',
         'Referer': `${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html`
-      });
+      }, undefined, timeoutMs);
       console.info(`[NetworkService] Schedule response code: ${resp.responseCode}`);
 
       if (resp.responseCode !== 200) {
@@ -860,8 +867,8 @@ export async function fetchCourseSchedule(semesterId: string): Promise<FetchResu
   return { success: false, message: '获取课表失败' };
 }
 
-export async function fetchExams(semesterId: string): Promise<FetchResult<Exam[]>> {
-  const maxRetries = 2;
+export async function fetchExams(semesterId: string, timeoutMs?: number): Promise<FetchResult<Exam[]>> {
+  const maxRetries = timeoutMs !== undefined && timeoutMs <= 10000 ? 0 : 2;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -876,7 +883,7 @@ export async function fetchExams(semesterId: string): Promise<FetchResult<Exam[]
         'application/x-www-form-urlencoded', {
           'X-Requested-With': 'XMLHttpRequest',
           'Referer': `${JW_BASE}/xskscx/kscx_cxXsgrksIndex.html`
-        });
+        }, undefined, timeoutMs);
 
       if (resp.responseCode !== 200) {
         return { success: false, message: `获取考试失败 (${resp.responseCode})` };
@@ -904,8 +911,8 @@ export async function fetchExams(semesterId: string): Promise<FetchResult<Exam[]
   return { success: false, message: '获取考试失败' };
 }
 
-export async function fetchTodos(semesterId: string): Promise<FetchResult<Todo[]>> {
-  const maxRetries = 2;
+export async function fetchTodos(semesterId: string, timeoutMs?: number): Promise<FetchResult<Todo[]>> {
+  const maxRetries = timeoutMs !== undefined && timeoutMs <= 10000 ? 0 : 2;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -917,7 +924,7 @@ export async function fetchTodos(semesterId: string): Promise<FetchResult<Todo[]
 
       const resp = await httpPost(
         `${JW_BASE}/xtgl/ywcx_cxWdyw.html?doType=query&gnmkdm=N400010&layout=default`, body,
-        'application/x-www-form-urlencoded', { 'X-Requested-With': 'XMLHttpRequest' });
+        'application/x-www-form-urlencoded', { 'X-Requested-With': 'XMLHttpRequest' }, undefined, timeoutMs);
 
       if (resp.responseCode !== 200) {
         return { success: false, message: `获取作业失败 (${resp.responseCode})` };
@@ -1004,8 +1011,7 @@ export async function checkUpdate(): Promise<FetchResult<string>> {
         method: http.RequestMethod.GET,
         header: { 'Accept': 'application/vnd.github.v3+json' },
         connectTimeout: 8000,
-        readTimeout: 8000,
-        dnsServers: DNS_SERVERS
+        readTimeout: 8000
       }
     );
     request.destroy();

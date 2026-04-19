@@ -49,6 +49,7 @@ export const AppKeys: Record<string, string> = {
   "LATEST_VERSION": 'latestVersion',
   "APP_VERSION": 'appVersion',
   "STUDENT_INFO": 'studentInfo',
+  "IS_INITIAL_FETCH_DONE": 'isInitialFetchDone',
   "topRectHeight": 'topRectHeight',
   "bottomRectHeight": 'bottomRectHeight'
 };
@@ -129,7 +130,8 @@ struct Index {
     AppStorage.setOrCreate(AppKeys.LATEST_VERSION, '');
     AppStorage.setOrCreate(AppKeys.APP_VERSION, CURRENT_VERSION);
     AppStorage.setOrCreate(AppKeys.STUDENT_INFO, '');
-    AppStorage.setOrCreate('semesterIndex', 0);
+    AppStorage.setOrCreate(AppKeys.IS_INITIAL_FETCH_DONE, false);
+    AppStorage.setOrCreate(AppKeys.CURRENT_SEMESTER_INDEX, 0);
     AppStorage.setOrCreate('topRectHeight', 0);
     AppStorage.setOrCreate('bottomRectHeight', 0);
   }
@@ -167,7 +169,9 @@ struct Index {
       this.storageService.loadUsername(),
       this.storageService.loadLastUpdate(),
       this.storageService.loadString('cookies', ''),
-      this.storageService.loadString('student_info', '')
+      this.storageService.loadString('student_info', ''),
+      this.storageService.loadBoolean('isInitialFetchDone', false),
+      this.storageService.loadNumber('semester_index', 0)
     ]);
 
     const tasks = results[0];
@@ -182,6 +186,8 @@ struct Index {
     const lastUpdate = results[9];
     const cookies = results[10];
     const studentInfoStr = results[11] as string;
+    const isInitialFetchDone = results[12] as boolean;
+    const semesterIndex = results[13] as number;
 
     AppStorage.set(AppKeys.TASKS, tasks);
     AppStorage.set(AppKeys.SEMESTERS, semesters);
@@ -195,6 +201,8 @@ struct Index {
     AppStorage.set(AppKeys.USERNAME, username);
     AppStorage.set(AppKeys.IS_LOGGED_IN, username.length > 0);
     AppStorage.set(AppKeys.LAST_UPDATE, lastUpdate);
+    AppStorage.set(AppKeys.IS_INITIAL_FETCH_DONE, isInitialFetchDone);
+    AppStorage.set(AppKeys.CURRENT_SEMESTER_INDEX, semesterIndex);
     if (cookies.length > 0) setCookies(cookies);
     // 恢复学号到 NetworkService（避免重启后 savedStudentId 为空）
     if (username.length > 0 && username !== 'web_user') {
