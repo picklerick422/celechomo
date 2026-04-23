@@ -1243,36 +1243,97 @@ function parseSemestersFromHtml(html: string): Semester[] {
 }
 
 interface GradeItem {
-  kcmc?: string;
-  kch?: string;
-  xf?: number | string;
-  cj?: number | string;
-  jd?: number | string;
-  djjbmc?: string;
-  xnm?: string;
-  xqm?: string;
+  // 课程名称（多种可能字段名）
+  kcmc?: string; kczwmc?: string; name?: string; courseName?: string; coursename?: string; kcname?: string; course?: string;
+  // 课程号（多种可能字段名）
+  kch?: string; kch_id?: string; kcid?: string; kchId?: string; jxb_id?: string; jxbId?: string; courseId?: string; kcbh?: string; courseCode?: string; kchId2?: string;
+  // 学分
+  xf?: number | string; credit?: number | string; credits?: number | string; xfm?: number | string; courseCredit?: number | string; xfId?: number | string; xfh?: number | string;
+  // 成绩
+  cj?: number | string; score?: number | string; grade?: number | string; achievement?: number | string; cjId?: number | string; totalScore?: number | string; kscj?: number | string; cj1?: number | string; cj2?: number | string; bfzcj?: number | string;
+  // 绩点
+  jd?: number | string; gpa?: number | string; point?: number | string; xjd?: number | string; gradePoint?: number | string; jdl?: number | string;
+  // 等级
+  djjbmc?: string; gradeLevel?: string; level?: string; dj?: string; gradeName?: string; gradeDesc?: string; cjdj?: string;
+  // 教师
+  jsxm?: string; teacher?: string; js?: string; jsmc?: string; teacherName?: string; instructor?: string; rkjs?: string;
+  // 学期
+  xnm?: string; year?: string; xn?: string; academicYear?: string;
+  xqm?: string; term?: string; xq?: string; semesterCode?: string;
+}
+
+/** 从对象中按多个候选键提取字符串值 */
+function pickStr(item: Record<string, Object>, ...keys: string[]): string {
+  for (const k of keys) {
+    const v = item[k];
+    if (v !== undefined && v !== null) {
+      const s = String(v).trim();
+      if (s.length > 0 && s !== 'null' && s !== 'undefined') return s;
+    }
+  }
+  return '';
+}
+
+/** 从对象中按多个候选键提取数字值 */
+function pickNum(item: Record<string, Object>, ...keys: string[]): number {
+  for (const k of keys) {
+    const v = item[k];
+    if (v !== undefined && v !== null) {
+      const n = parseFloat(String(v));
+      if (!isNaN(n)) return n;
+    }
+  }
+  return NaN;
 }
 
 function parseGradesFromJson(json: string): Course[] {
   try {
     const data = JSON.parse(json) as GradesResponse;
     const items = data.items ?? data.rows ?? [];
-    return items.map(item => {
+    // 诊断：打印第一个 item 的所有字段名和样本值
+    if (items.length > 0) {
+      const first = items[0];
+      const firstKeys = Object.keys(first).join(', ');
+      console.info(`[NetworkService] Grade item fields: ${firstKeys}`);
+      const samplePairs = Object.entries(first).slice(0, 8).map((entry: [string, Object]) => `${entry[0]}=${String(entry[1]).substring(0, 30)}`).join(', ');
+      console.info(`[NetworkService] Grade sample: ${samplePairs}`);
+    }
+    return items.map((item, idx) => {
+      const raw = item as Record<string, Object>;
       const c = new Course();
-      c.uid = `course_${item.kch ?? ''}_${item.xnm ?? ''}_${item.xqm ?? ''}`;
-      c.courseId = item.kch as string ?? '';
-      c.name = item.kcmc as string ?? '';
-      const rawCredits = parseFloat(String(item.xf ?? '0'));
+      // 课程名称
+      c.name = pickStr(raw, 'kcmc', 'kczwmc', 'name', 'courseName', 'coursename', 'kcname', 'course');
+      // 课程号（多种字段兼容）
+      let courseIdRaw = pickStr(raw, 'kch', 'kch_id', 'kcid', 'kchId', 'jxb_id', 'jxbId', 'courseId', 'kcbh', 'courseCode', 'kchId2');
+      // 如果所有课程号字段都为空，使用课程名称本身作为 courseId（便于与课表数据按名称合并）
+      if (courseIdRaw.length === 0) {
+        courseIdRaw = c.name.replace(/\s+/g, '_');
+      }
+      c.courseId = courseIdRaw;
+      c.uid = `course_${courseIdRaw}_${pickStr(raw, 'xnm', 'year', 'xn', 'academicYear')}_${pickStr(raw, 'xqm', 'term', 'xq', 'semesterCode')}`;
+      // 学分
+      const rawCredits = pickNum(raw, 'xf', 'credit', 'credits', 'xfm', 'courseCredit', 'xfId', 'xfh');
       c.credits = isNaN(rawCredits) ? 0 : rawCredits;
-      const rawGrade = parseFloat(String(item.cj ?? '-1'));
+      // 成绩（优先百分制，但也可能是等级制）
+      const rawGrade = pickNum(raw, 'cj', 'score', 'grade', 'achievement', 'cjId', 'totalScore', 'kscj', 'cj1', 'cj2', 'bfzcj');
       c.grade = isNaN(rawGrade) ? -1 : rawGrade;
-      const rawGradePoint = parseFloat(String(item.jd ?? '-1'));
+      // 绩点
+      const rawGradePoint = pickNum(raw, 'jd', 'gpa', 'point', 'xjd', 'gradePoint', 'jdl');
       c.gradePoint = isNaN(rawGradePoint) ? -1 : rawGradePoint;
-      c.gradeLevel = item.djjbmc as string ?? '';
-      c.semester = `${item.xnm ?? ''}-${item.xqm ?? ''}`;
+      // 等级描述
+      c.gradeLevel = pickStr(raw, 'djjbmc', 'gradeLevel', 'level', 'dj', 'gradeName', 'gradeDesc', 'cjdj');
+      // 教师
+      c.teacher = pickStr(raw, 'jsxm', 'teacher', 'js', 'jsmc', 'teacherName', 'instructor', 'rkjs');
+      // 学期
+      c.semester = `${pickStr(raw, 'xnm', 'year', 'xn', 'academicYear')}-${pickStr(raw, 'xqm', 'term', 'xq', 'semesterCode')}`;
+      // 诊断：如果名称或学分为空，打印警告
+      if (c.name.length === 0 || c.credits === 0) {
+        console.warn(`[NetworkService] Grade parse warn: name="${c.name}" credits=${c.credits} id=${c.courseId}`);
+      }
       return c;
     });
-  } catch {
+  } catch (e) {
+    console.error(`[NetworkService] parseGradesFromJson error: ${(e as Error).message}`);
     return [];
   }
 }

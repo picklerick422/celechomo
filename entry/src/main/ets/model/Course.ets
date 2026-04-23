@@ -102,6 +102,19 @@ export class Course {
     c.gradeLevel = (obj['gradeLevel'] as string) ?? '';
     c.semester = (obj['semester'] as string) ?? '';
     c.color = (obj['color'] as string) ?? '#5C9EF8';
+    // 解析 timeSlots（持久化后恢复需要）
+    const slots = (obj['timeSlots'] as Record<string, string | number | boolean | number[]>[]) ?? [];
+    c.timeSlots = slots.map(s => {
+      const slot = new CourseTimeSlot(
+        (s['weekDay'] as number) ?? 1,
+        (s['startPeriod'] as number) ?? 1,
+        (s['endPeriod'] as number) ?? 2,
+        (s['location'] as string) ?? '',
+        (s['weeks'] as number[]) ?? [],
+        (s['isFirstHalf'] as boolean) ?? true
+      );
+      return slot;
+    });
     return c;
   }
 }

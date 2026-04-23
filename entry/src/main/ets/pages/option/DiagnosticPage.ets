@@ -822,10 +822,9 @@ export struct DiagnosticPage {
               .width('100%')
             }
             .width('100%')
-            .padding(14)
+            .padding({ left: 16, right: 16, top: 12, bottom: 12 })
             .backgroundColor($r('app.color.card_background'))
             .borderRadius(12)
-            .padding({ left: 16, right: 16, top: 12, bottom: 12 })
 
             // ── 单项测试按钮 ──
             Row({ space: 8 }) {
@@ -887,17 +886,21 @@ export struct DiagnosticPage {
               .borderRadius(16)
             }
 
-            Blank().height(40)
+            // 用固定高度占位代替 Blank，确保内容顶部对齐
+            Row().width('100%').height(40)
           }
           .width('100%')
-          .padding({ top: 4, bottom: 16 })
+          .alignItems(HorizontalAlign.Center)
+          .padding({ top: 12, bottom: 16 })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring)
+        .align(Alignment.Top)
       }
       .width('100%').height('100%')
       .backgroundColor($r('app.color.app_background'))
+      .alignItems(HorizontalAlign.Center)
     }
     .title('数据诊断')
     .onReady((_ctx: NavDestinationContext) => {

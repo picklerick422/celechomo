@@ -25,6 +25,8 @@ import { CourseIdMappingEditPage } from './option/CourseIdMappingEditPage';
 import { CreditsPage } from './option/CreditsPage';
 import { ServiceTermsPage } from './option/ServiceTermsPage';
 import { DiagnosticPage } from './option/DiagnosticPage';
+import { HdsNavigation, HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
+import { SymbolGlyphModifier } from '@kit.ArkUI';
 import curves from '@ohos.curves';
 
 // ============= 全局状态 Key =============
@@ -107,6 +109,7 @@ struct Index {
 
   private storageService: StorageService | null = null;
   private tabController: TabsController = new TabsController();
+  private hdsTabController: HdsTabsController = new HdsTabsController();
   private refreshTimer: number = -1;
 
   /** 初始化 AppStorage 默认值 */
@@ -268,6 +271,8 @@ struct Index {
                 { text: '访问网站', color: '#000000' },
                 { text: '忽略', color: '#000000' }
               ]
+            }).catch(() => {
+              // TODO: Implement error handling.
             });
           } catch {}
         }
@@ -306,6 +311,36 @@ struct Index {
   private getTabGradientEnd(index: number): string {
     const colors = ['#764ba2', '#00ACC1', '#f5576c', '#3f51b5', '#48484A'];
     return colors[index] || '#764ba2';
+  }
+
+  // ======= HDS 沉浸光感 Tab 图标配置 =======
+  private getTabNormalIcon(index: number): SymbolGlyphModifier {
+    const icons = [
+      $r('sys.symbol.alarm_fill_1'),
+      $r('sys.symbol.worldclock_fill_2'),
+      $r('sys.symbol.stopwatch_2'),
+      $r('sys.symbol.square_and_pencil'),
+      $r('sys.symbol.star')
+    ];
+    return new SymbolGlyphModifier(icons[index] ?? icons[0])
+      .fontColor([$r('sys.color.ohos_id_color_bottom_tab_icon_off')]);
+  }
+
+  private getTabSelectedIcon(index: number): SymbolGlyphModifier {
+    const icons = [
+      $r('sys.symbol.alarm_fill_1'),
+      $r('sys.symbol.worldclock_fill_2'),
+      $r('sys.symbol.stopwatch_2'),
+      $r('sys.symbol.square_and_pencil'),
+      $r('sys.symbol.star')
+    ];
+    return new SymbolGlyphModifier(icons[index] ?? icons[0])
+      .fontColor([$r('sys.color.ohos_id_color_activated')]);
+  }
+
+  private getTabLabel(index: number): string {
+    const labels = ['接下来', '日程', '任务', '学业', '设置'];
+    return labels[index] ?? '';
   }
 
   // ======= Tab 构建块 =======
@@ -395,43 +430,58 @@ struct Index {
   }
 
   build() {
-    Navigation(this.navStack) {
-      Tabs({
-        barPosition: BarPosition.End,
-        controller: this.tabController,
-        index: this.currentIndex
-      }) {
+    HdsNavigation(this.navStack) {
+      HdsTabs({ controller: this.hdsTabController }) {
         TabContent() {
           FlowPage({ navStack: this.navStack })
         }
-        .tabBar(this.TabItem(0, $r('sys.media.ohos_ic_public_clock'), '接下来'))
+        .tabBar(new BottomTabBarStyle({
+          normal: this.getTabNormalIcon(0),
+          selected: this.getTabSelectedIcon(0)
+        }, this.getTabLabel(0)))
 
         TabContent() {
           CalendarPage({ navStack: this.navStack })
         }
-        .tabBar(this.TabItemWithEmoji(1, '📅', '日程'))
+        .tabBar(new BottomTabBarStyle({
+          normal: this.getTabNormalIcon(1),
+          selected: this.getTabSelectedIcon(1)
+        }, this.getTabLabel(1)))
 
         TabContent() {
           TaskPage({ navPathStack: this.navStack })
         }
-        .tabBar(this.TabItemWithEmoji(2, '📝', '任务'))
+        .tabBar(new BottomTabBarStyle({
+          normal: this.getTabNormalIcon(2),
+          selected: this.getTabSelectedIcon(2)
+        }, this.getTabLabel(2)))
 
         TabContent() {
           ScholarPage({ navStack: this.navStack })
         }
-        .tabBar(this.TabItemWithEmoji(3, '🎓', '学业'))
+        .tabBar(new BottomTabBarStyle({
+          normal: this.getTabNormalIcon(3),
+          selected: this.getTabSelectedIcon(3)
+        }, this.getTabLabel(3)))
 
         TabContent() {
           OptionPage({ navStack: this.navStack })
         }
-        .tabBar(this.TabItemWithEmoji(4, '⚙️', '设置'))
+        .tabBar(new BottomTabBarStyle({
+          normal: this.getTabNormalIcon(4),
+          selected: this.getTabSelectedIcon(4)
+        }, this.getTabLabel(4)))
       }
-      .barHeight(64)
-      .barBackgroundColor($r('app.color.tab_bar_bg'))
-      .barBackgroundBlurStyle(BlurStyle.Regular)
       .barOverlap(true)
-      .animationDuration(300)
-      .scrollable(true)
+      .vertical(false)
+      .barPosition(BarPosition.End)
+      .barFloatingStyle({
+        barBottomMargin: 28,
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      })
       .onChange((index: number) => { this.currentIndex = index; })
     }
     .navDestination(pageMap)
@@ -439,7 +489,6 @@ struct Index {
     .hideToolBar(true)
     .mode(NavigationMode.Stack)
     .backgroundColor($r('app.color.app_background'))
-    .backgroundBlurStyle(BlurStyle.NONE)
     .expandSafeArea([], [SafeAreaEdge.BOTTOM])
   }
 }
