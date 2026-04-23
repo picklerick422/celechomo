@@ -323,7 +323,8 @@ struct Index {
       $r('sys.symbol.star')
     ];
     return new SymbolGlyphModifier(icons[index] ?? icons[0])
-      .fontColor([$r('sys.color.ohos_id_color_bottom_tab_icon_off')]);
+      .fontColor(['#8E8E93'])
+      .fontSize(22);
   }
 
   private getTabSelectedIcon(index: number): SymbolGlyphModifier {
@@ -335,7 +336,9 @@ struct Index {
       $r('sys.symbol.star')
     ];
     return new SymbolGlyphModifier(icons[index] ?? icons[0])
-      .fontColor([$r('sys.color.ohos_id_color_activated')]);
+      .fontColor([this.getTabColor(index)])
+      .fontSize(27)
+      .fontWeight(FontWeight.Bold);
   }
 
   private getTabLabel(index: number): string {
@@ -438,7 +441,13 @@ struct Index {
         .tabBar(new BottomTabBarStyle({
           normal: this.getTabNormalIcon(0),
           selected: this.getTabSelectedIcon(0)
-        }, this.getTabLabel(0)))
+        }, this.getTabLabel(0))
+          .labelStyle({
+            font: { size: 10, weight: FontWeight.Medium },
+            unselectedColor: '#8E8E93',
+            selectedColor: this.getTabColor(0)
+          })
+          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
 
         TabContent() {
           CalendarPage({ navStack: this.navStack })
@@ -446,7 +455,13 @@ struct Index {
         .tabBar(new BottomTabBarStyle({
           normal: this.getTabNormalIcon(1),
           selected: this.getTabSelectedIcon(1)
-        }, this.getTabLabel(1)))
+        }, this.getTabLabel(1))
+          .labelStyle({
+            font: { size: 10, weight: FontWeight.Medium },
+            unselectedColor: '#8E8E93',
+            selectedColor: this.getTabColor(1)
+          })
+          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
 
         TabContent() {
           TaskPage({ navPathStack: this.navStack })
@@ -454,7 +469,13 @@ struct Index {
         .tabBar(new BottomTabBarStyle({
           normal: this.getTabNormalIcon(2),
           selected: this.getTabSelectedIcon(2)
-        }, this.getTabLabel(2)))
+        }, this.getTabLabel(2))
+          .labelStyle({
+            font: { size: 10, weight: FontWeight.Medium },
+            unselectedColor: '#8E8E93',
+            selectedColor: this.getTabColor(2)
+          })
+          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
 
         TabContent() {
           ScholarPage({ navStack: this.navStack })
@@ -462,7 +483,13 @@ struct Index {
         .tabBar(new BottomTabBarStyle({
           normal: this.getTabNormalIcon(3),
           selected: this.getTabSelectedIcon(3)
-        }, this.getTabLabel(3)))
+        }, this.getTabLabel(3))
+          .labelStyle({
+            font: { size: 10, weight: FontWeight.Medium },
+            unselectedColor: '#8E8E93',
+            selectedColor: this.getTabColor(3)
+          })
+          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
 
         TabContent() {
           OptionPage({ navStack: this.navStack })
@@ -470,7 +497,13 @@ struct Index {
         .tabBar(new BottomTabBarStyle({
           normal: this.getTabNormalIcon(4),
           selected: this.getTabSelectedIcon(4)
-        }, this.getTabLabel(4)))
+        }, this.getTabLabel(4))
+          .labelStyle({
+            font: { size: 10, weight: FontWeight.Medium },
+            unselectedColor: '#8E8E93',
+            selectedColor: this.getTabColor(4)
+          })
+          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
       }
       .barOverlap(true)
       .vertical(false)
