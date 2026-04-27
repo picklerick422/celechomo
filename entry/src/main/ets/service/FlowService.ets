@@ -31,8 +31,32 @@ export function generateFlowList(
   // 1. 添加固定日程（课程、考试、用户固定任务）
   const fixedPeriods: Period[] = [];
 
-  // 添加课程 - 展开所有学期所有周次，只保留 [now, endDate] 范围内的
+  // 找到当前学期（包含当前日期或最接近的学期），只展开当前学期的课程
+  let activeSemester: Semester | null = null;
+  let bestDistance = Infinity;
   for (const semester of semesters) {
+    const startTime = semester.startDate.getTime();
+    const endTime = semester.endDate.getTime();
+    if (isNaN(startTime) || isNaN(endTime)) continue;
+    // 当前日期在学期内（含结束后7天宽限）→ 直接选中
+    if (now.getTime() >= startTime && now.getTime() <= endTime + 7 * 86400000) {
+      activeSemester = semester;
+      break;
+    }
+    // 找距离当前日期最近的学期
+    const distToStart = Math.abs(now.getTime() - startTime);
+    const distToEnd = Math.abs(now.getTime() - endTime);
+    const distance = Math.min(distToStart, distToEnd);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      activeSemester = semester;
+    }
+  }
+
+  console.info(`[FlowService] activeSemester=${activeSemester?.id ?? 'null'}, start=${activeSemester?.startDate?.toISOString() ?? 'null'}, end=${activeSemester?.endDate?.toISOString() ?? 'null'}, courses=${activeSemester?.courses?.length ?? 0}, now=${now.toISOString()}`);
+
+  if (activeSemester !== null) {
+    const semester = activeSemester;
     // 以学期起始日所在周的周一作为第1周的周一
     const semWeek1Monday = getWeekStart(semester.startDate);
 

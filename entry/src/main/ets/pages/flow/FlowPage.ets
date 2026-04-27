@@ -9,6 +9,18 @@ interface CourseScheduleParam {
   courseUid: string;
 }
 
+/** 某天课程分组 */
+interface DayCourseGroup {
+  label: string
+  courses: Period[]
+}
+
+/** 本周课程结果 */
+interface WeeklyCoursesResult {
+  today: Period[]
+  upcoming: DayCourseGroup[]
+}
+
 // 获取渐变颜色的结束色（自动计算）
 function getGradientEndColor(color: string): string {
   if (color.length < 7) return color;
@@ -29,6 +41,7 @@ export struct FlowPage {
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
   @State currentTime: Date = new Date();
+  @State weeklyResult: WeeklyCoursesResult = { today: [], upcoming: [] };
   private timer: number = -1;
   @State progressValues: number[] = [];
 
@@ -42,11 +55,11 @@ export struct FlowPage {
   private updateTime(): void {
     this.currentTime = new Date();
     this.refreshCurrentPeriod();
+    this.refreshWeeklyCourses();
   }
 
   aboutToAppear(): void {
     this.updateTime();
-    this.refreshCurrentPeriod();
     this.timer = setInterval(() => {
       this.updateTime();
     }, 1000);
@@ -71,11 +84,51 @@ export struct FlowPage {
     this.currentPeriod = this.getCurrentPeriod();
   }
 
-  /** 获取后续事务列表（排除第一个） */
-  private getUpcomingPeriods(): Period[] {
-    const current = this.currentPeriod;
-    if (!current) return this.flowList.slice(0, 10);
-    return this.flowList.filter(p => p !== current).slice(0, 20);
+  /** 获取未来一周内的课程，按今日/其他日期分组 */
+  private getWeeklyCourses(): WeeklyCoursesResult {
+    const now = this.currentTime;
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekEnd = new Date(today.getTime() + 7 * 86400000);
+
+    // 过滤未来7天内的课程，按开始时间排序
+    const allCourses = this.flowList.filter((p: Period) =>
+      p.type === PeriodType.CLASSES &&
+      p.startTime >= today &&
+      p.startTime < weekEnd
+    ).sort((a: Period, b: Period) => a.startTime.getTime() - b.startTime.getTime());
+
+    // 分离今日课程
+    const todayCourses: Period[] = [];
+    const upcomingMap: Map<string, Period[]> = new Map();
+    const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+    for (const c of allCourses) {
+      const d = new Date(c.startTime.getFullYear(), c.startTime.getMonth(), c.startTime.getDate());
+      if (d.getTime() === today.getTime()) {
+        todayCourses.push(c);
+        continue;
+      }
+      const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
+      let label = '';
+      if (diff === 1) label = '明天';
+      else if (diff === 2) label = '后天';
+      else label = `${weekdays[c.startTime.getDay()]} ${c.startTime.getMonth() + 1}/${c.startTime.getDate()}`;
+
+      if (!upcomingMap.has(label)) upcomingMap.set(label, []);
+      upcomingMap.get(label)!.push(c);
+    }
+
+    const upcomingEntries = Array.from(upcomingMap.entries());
+    const upcoming: DayCourseGroup[] = [];
+    for (const entry of upcomingEntries) {
+      upcoming.push({ label: entry[0], courses: entry[1] } as DayCourseGroup);
+    }
+    return { today: todayCourses, upcoming: upcoming };
+  }
+
+  private refreshWeeklyCourses(): void {
+    this.weeklyResult = this.getWeeklyCourses();
+    console.info(`[FlowPage] refreshWeekly: flowList=${this.flowList.length}, weekly.today=${this.weeklyResult.today.length}, weekly.upcoming=${this.weeklyResult.upcoming.length}`);
   }
 
   /** 获取事务的颜色 */
@@ -217,74 +270,112 @@ export struct FlowPage {
     })
   }
 
+  /** 50% 宽度的小课程卡片（用于明日及以后的课程） */
   @Builder
-  SmallCard(period: Period) {
-    Row({ space: 14 }) {
-      ColorIndicator({
-        color: this.getPeriodColor(period),
-        type: period.type,
-        indicatorSize: 14
-      })
-
-      Column({ space: 6 }) {
+  SmallCourseCard(period: Period) {
+    Column({ space: 6 }) {
+      // 顶部：颜色标记 + 课程名
+      Row({ space: 6 }) {
+        Row()
+          .width(8).height(8).borderRadius(4)
+          .backgroundColor(this.getPeriodColor(period))
         Text(period.summary)
-          .fontSize(16)
+          .fontSize(13)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
+          .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
-
-        Row({ space: 10 }) {
-          Text(this.formatTimeRange(period))
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-          if (period.location.length > 0) {
-            Text(period.location)
-              .fontSize(12)
-              .fontColor($r('app.color.text_tertiary'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-        }
       }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
+      .width('100%')
 
-      if (period.isOngoing(this.currentTime)) {
-        Column() {
-          Text('进行中')
-            .fontSize(11)
-            .fontColor(Color.White)
-            .fontWeight(FontWeight.Medium)
-        }
-        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-        .borderRadius(12)
-        .backgroundColor(this.getPeriodColor(period))
-        .shadow({
-          radius: 6,
-          color: this.getPeriodColor(period) + '40',
-          offsetX: 0,
-          offsetY: 2
-        })
+      // 时间
+      Text(`${period.startTime.getHours().toString().padStart(2, '0')}:${period.startTime.getMinutes().toString().padStart(2, '0')}`)
+        .fontSize(11)
+        .fontColor($r('app.color.text_secondary'))
+
+      // 地点
+      if (period.location.length > 0) {
+        Text(period.location)
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+    .padding(12)
     .backgroundColor($r('app.color.card_background'))
-    .borderRadius(18)
-    .shadow({
-      radius: 8,
-      color: '#10000000',
-      offsetX: 0,
-      offsetY: 2
-    })
+    .borderRadius(14)
     .onClick(() => {
-      if (period.type === PeriodType.CLASSES) {
-        const param: CourseScheduleParam = { courseUid: period.fromUid };
-        this.navStack.pushPathByName('CourseSchedule', param);
-      }
+      const param: CourseScheduleParam = { courseUid: period.fromUid };
+      this.navStack.pushPathByName('CourseSchedule', param);
     })
+  }
+
+  /** 今日课程区域（大卡片 100% 宽度） */
+  @Builder
+  TodaySection(courses: Period[]) {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        Row()
+          .width(4).height(16).borderRadius(2)
+          .backgroundColor('#667eea')
+        Text('今日课程')
+          .fontSize(16)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+        Blank()
+        Text(`${courses.length} 节`)
+          .fontSize(12)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      .width('100%')
+      .padding({ left: 4 })
+
+      Column({ space: 10 }) {
+        ForEach(courses, (period: Period) => {
+          this.MainCard(period)
+        }, (period: Period) => period.uid)
+      }
+    }
+    .width('100%')
+  }
+
+  /** 某一天课程区域（小卡片 50% 双列） */
+  @Builder
+  DaySection(group: DayCourseGroup) {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        Row()
+          .width(4).height(16).borderRadius(2)
+          .backgroundColor('#8E8E93')
+        Text(group.label)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_secondary'))
+        Blank()
+        Text(`${group.courses.length} 节`)
+          .fontSize(12)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      .width('100%')
+      .padding({ left: 4 })
+
+      // 双列网格
+      Grid() {
+        ForEach(group.courses, (period: Period) => {
+          GridItem() {
+            this.SmallCourseCard(period)
+          }
+        }, (period: Period) => period.uid)
+      }
+      .columnsTemplate('1fr 1fr')
+      .columnsGap(8)
+      .rowsGap(8)
+      .width('100%')
+    }
+    .width('100%')
   }
 
   build() {
@@ -322,46 +413,35 @@ export struct FlowPage {
       .padding({ left: 20, right: 20, top: this.topRectHeight + 10, bottom: 12 })
 
       // 内容列表
-      if (this.flowList.length === 0) {
-        EmptyView({
-          icon: '🎉',
-          title: '暂无安排',
-          subtitle: '添加任务或登录后查看课程安排'
-        })
-      } else {
-        Scroll() {
-          Column({ space: 14 }) {
-            // 主卡片
-            if (this.currentPeriod !== null) {
-              this.MainCard(this.currentPeriod)
-            }
-
-            // 后续事务
-            if (this.getUpcomingPeriods().length > 0) {
-              Column({ space: 10 }) {
-                Text('接下来')
-                  .fontSize(15)
-                  .fontColor($r('app.color.text_secondary'))
-                  .fontWeight(FontWeight.Medium)
-                  .padding({ left: 4 })
-
-                Column({ space: 10 }) {
-                  ForEach(this.getUpcomingPeriods(), (period: Period) => {
-                    this.SmallCard(period)
-                  }, (period: Period) => period.uid)
-                }
-              }
-            }
-
-            // 底部留白（避免被悬浮导航栏遮挡）
-            Blank().height(64 + this.bottomRectHeight + 20)
+      Scroll() {
+        Column({ space: 16 }) {
+          // 今日课程（大卡片 100%）
+          if (this.weeklyResult.today.length > 0) {
+            this.TodaySection(this.weeklyResult.today)
           }
-          .padding({ left: 16, right: 16, bottom: 16 })
+
+          // 未来几天课程（小卡片 50% 双列）
+          ForEach(this.weeklyResult.upcoming, (group: DayCourseGroup) => {
+            this.DaySection(group)
+          }, (group: DayCourseGroup) => group.label)
+
+          // 空状态：未来一周无课程
+          if (this.weeklyResult.today.length === 0 && this.weeklyResult.upcoming.length === 0) {
+            EmptyView({
+              icon: '🎉',
+              title: '未来一周无课程',
+              subtitle: '享受空闲时光，或添加日程安排'
+            })
+          }
+
+          // 底部留白（避免被悬浮导航栏遮挡）
+          Blank().height(64 + this.bottomRectHeight + 20)
         }
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-        .edgeEffect(EdgeEffect.Spring)
+        .padding({ left: 16, right: 16, bottom: 16 })
       }
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
     }
     .width('100%')
     .height('100%')

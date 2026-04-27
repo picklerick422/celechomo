@@ -1064,12 +1064,14 @@ function parseSemestersFromJson(json: string): Semester[] {
     for (const item of items) {
       const year = (item.xnm as string) ?? '';
       const term = (item.xqm as string) ?? '';
-      const name = (item.xnmc as string) ?? `${year} 第${term === '3' ? '一' : '二'}学期`;
+      const termNum = term === '3' ? 1 : 2;
+      const shortYear = year.replace(/(\d{2})(\d{2})-(\d{2})(\d{2})/, '$2-$4');
+      const termName = termNum === 1 ? '秋冬' : '春夏';
+      const name = (item.xnmc as string) ?? `${shortYear}${termName}`;
 
       if (!year || !term) continue;
       if (!/^\d{4}-\d{4}$/.test(year)) continue;
 
-      const termNum = term === '3' ? 1 : 2;
       const yearStart = parseInt(year.split('-')[0]);
       const s = new Semester();
       s.id = `${year}-${termNum}`;
@@ -1111,7 +1113,7 @@ function generateSemestersByDate(): Semester[] {
     // 秋季学期（第一学期）
     const fallSem = new Semester();
     fallSem.id = `${sy}-${sy + 1}-1`;
-    fallSem.name = `${sy}-${sy + 1} 第一学期`;
+    fallSem.name = `${String(sy).substring(2)}-${String(sy + 1).substring(2)}秋冬`;
     fallSem.startDate = new Date(`${sy}-09-01`);
     fallSem.endDate = new Date(`${sy + 1}-01-31`);
     semesters.push(fallSem);
@@ -1119,7 +1121,7 @@ function generateSemestersByDate(): Semester[] {
     // 春季学期（第二学期）
     const springSem = new Semester();
     springSem.id = `${sy}-${sy + 1}-2`;
-    springSem.name = `${sy}-${sy + 1} 第二学期`;
+    springSem.name = `${String(sy).substring(2)}-${String(sy + 1).substring(2)}春夏`;
     springSem.startDate = new Date(`${sy + 1}-02-15`);
     springSem.endDate = new Date(`${sy + 1}-07-31`);
     // 只添加当前学年之前（含当前学年春季，如果已到春季的话）
@@ -1230,7 +1232,8 @@ function parseSemestersFromHtml(html: string): Semester[] {
       const isFirst = termNum === 1;
       const s = new Semester();
       s.id = `${year}-${termNum}`;
-      s.name = `${year} 第${isFirst ? '一' : '二'}学期`;
+      const shortYear = year.replace(/(\d{2})(\d{2})-(\d{2})(\d{2})/, '$2-$4');
+      s.name = `${shortYear}${isFirst ? '秋冬' : '春夏'}`;
       s.startDate = new Date(isFirst ? `${yearStart}-09-10` : `${yearStart + 1}-02-28`);
       s.endDate = new Date(isFirst ? `${yearStart + 1}-01-20` : `${yearStart + 1}-07-10`);
       semesters.push(s);
@@ -1298,7 +1301,7 @@ function parseGradesFromJson(json: string): Course[] {
       const samplePairs = Object.entries(first).slice(0, 8).map((entry: [string, Object]) => `${entry[0]}=${String(entry[1]).substring(0, 30)}`).join(', ');
       console.info(`[NetworkService] Grade sample: ${samplePairs}`);
     }
-    return items.map((item, idx) => {
+    const parsedCourses = items.map((item, idx) => {
       const raw = item as Record<string, Object>;
       const c = new Course();
       // 课程名称
@@ -1324,14 +1327,39 @@ function parseGradesFromJson(json: string): Course[] {
       c.gradeLevel = pickStr(raw, 'djjbmc', 'gradeLevel', 'level', 'dj', 'gradeName', 'gradeDesc', 'cjdj');
       // 教师
       c.teacher = pickStr(raw, 'jsxm', 'teacher', 'js', 'jsmc', 'teacherName', 'instructor', 'rkjs');
-      // 学期
-      c.semester = `${pickStr(raw, 'xnm', 'year', 'xn', 'academicYear')}-${pickStr(raw, 'xqm', 'term', 'xq', 'semesterCode')}`;
+      // 学期 - 优先从选课课号(xkkh)解析，因为成绩API可能不返回xnm/xqm字段
+      const xkkh = pickStr(raw, 'xkkh', 'xkkh_id', 'xkkhId');
+      if (xkkh.length > 0) {
+        // 尝试多种格式: "2024-2025-1-..." "2024-2025-1)..." "(2024-2025-1)..."
+        let m = xkkh.match(/(\d{4})[\-\.\s](\d{4})[\-\.\s]([123])/);
+        if (m) {
+          c.semester = `${m[1]}-${m[2]}-${m[3]}`;
+        } else {
+          // 尝试 "202420251..." 格式
+          m = xkkh.match(/^(\d{4})(\d{4})([123])/);
+          if (m) {
+            c.semester = `${m[1]}-${m[2]}-${m[3]}`;
+          }
+        }
+      }
+      // 如果 xkkh 解析失败，尝试常规字段
+      if (c.semester.length === 0) {
+        c.semester = `${pickStr(raw, 'xnm', 'year', 'xn', 'academicYear')}-${pickStr(raw, 'xqm', 'term', 'xq', 'semesterCode')}`;
+      }
+      // 诊断：打印前3条记录的 xkkh 和解析结果
+      if (idx < 3) {
+        console.info(`[NetworkService] Grade[${idx}] xkkh="${xkkh}" → semester="${c.semester}" name="${c.name}" grade=${c.grade}`);
+      }
       // 诊断：如果名称或学分为空，打印警告
       if (c.name.length === 0 || c.credits === 0) {
         console.warn(`[NetworkService] Grade parse warn: name="${c.name}" credits=${c.credits} id=${c.courseId}`);
       }
       return c;
     });
+    // 汇总诊断：统计有学期信息的记录数
+    const withSemester = parsedCourses.filter(c => c.semester && c.semester.length > 0 && c.semester !== '-').length;
+    console.info(`[NetworkService] Parsed ${parsedCourses.length} grades, ${withSemester} have semester info`);
+    return parsedCourses;
   } catch (e) {
     console.error(`[NetworkService] parseGradesFromJson error: ${(e as Error).message}`);
     return [];
@@ -1398,16 +1426,37 @@ function parseCourseScheduleFromJson(json: string, semesterId: string): Course[]
         continue;
       }
 
-      // 获取或创建 Course
-      const courseKey = item.kch_id as string ?? courseName;
+      // 根据 xxq 推断课程实际所属学期（课表API可能返回全年课程）
+      const xxq = item.xxq as string ?? '';
+      let actualSemesterId = semesterId;
+      const yearParts = semesterId.split('-');
+      if (yearParts.length >= 2) {
+        const yearStart = yearParts[0];
+        const yearEnd = yearParts[1];
+        // 支持多种 xxq 格式：秋/冬/春/夏/秋冬/春夏/1/2/上/下
+        if (xxq.includes('春') || xxq.includes('夏') || xxq === '2' || xxq === '下') {
+          actualSemesterId = `${yearStart}-${yearEnd}-2`; // 春夏学期
+        } else if (xxq.includes('秋') || xxq.includes('冬') || xxq === '1' || xxq === '上') {
+          actualSemesterId = `${yearStart}-${yearEnd}-1`; // 秋冬学期
+        }
+        // xxq 为空时：actualSemesterId = semesterId（查询的学期，后续全局去重处理）
+      }
+
+      // 诊断：打印前3条记录的 xxq 和解析结果
+      if (courseMap.size < 3) {
+        console.info(`[NetworkService] Schedule parse: xxq="${xxq}" → semester="${actualSemesterId}" name="${courseName}"`);
+      }
+
+      // 获取或创建 Course（courseKey 加入 actualSemesterId 避免同课跨学期冲突）
+      const courseKey = `${item.kch_id as string ?? courseName}_${actualSemesterId}`;
       if (!courseMap.has(courseKey)) {
         const c = new Course();
-        c.uid = `course_${courseKey}_${semesterId}`;
+        c.uid = `course_${item.kch_id as string ?? courseName}_${actualSemesterId}`;
         c.courseId = item.kch_id as string ?? '';
         c.name = courseName;
         c.teacher = teacher;
         c.credits = 0;
-        c.semester = semesterId;
+        c.semester = actualSemesterId;
         courseMap.set(courseKey, c);
       } else {
         // 如果教师信息已解析，更新（首次可能为空）
@@ -1435,7 +1484,6 @@ function parseCourseScheduleFromJson(json: string, semesterId: string): Course[]
       }
 
       // 解析学期半段（秋/春=前半, 冬/夏=后半）
-      const xxq = item.xxq as string ?? '';
       const isFirstHalf = xxq.includes('秋') || xxq.includes('春');
 
       const courseSlot = new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, isFirstHalf);

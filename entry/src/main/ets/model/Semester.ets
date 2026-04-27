@@ -158,8 +158,35 @@ export class Semester {
     const s = new Semester();
     s.id = (obj['id'] as string) ?? '';
     s.name = (obj['name'] as string) ?? '';
-    s.startDate = new Date((obj['startDate'] as string) ?? '');
-    s.endDate = new Date((obj['endDate'] as string) ?? '');
+
+    // 日期解析：失败时使用合理的默认值（避免 Invalid Date 导致时间计算异常）
+    const startStr = (obj['startDate'] as string) ?? '';
+    const endStr = (obj['endDate'] as string) ?? '';
+    const parsedStart = new Date(startStr);
+    const parsedEnd = new Date(endStr);
+    if (!isNaN(parsedStart.getTime())) {
+      s.startDate = parsedStart;
+    } else {
+      // 根据学期 ID 推断默认 startDate（如 2025-2026-2 → 2026-02-15）
+      const parts = s.id.split('-');
+      if (parts.length >= 3) {
+        const yearStart = parseInt(parts[0]);
+        const termNum = parseInt(parts[2]);
+        s.startDate = new Date(termNum === 1 ? `${yearStart}-09-01` : `${yearStart + 1}-02-15`);
+      }
+    }
+    if (!isNaN(parsedEnd.getTime())) {
+      s.endDate = parsedEnd;
+    } else {
+      // 根据学期 ID 推断默认 endDate（如 2025-2026-2 → 2026-07-31）
+      const parts = s.id.split('-');
+      if (parts.length >= 3) {
+        const yearStart = parseInt(parts[0]);
+        const termNum = parseInt(parts[2]);
+        s.endDate = new Date(termNum === 1 ? `${yearStart + 1}-01-31` : `${yearStart + 1}-07-31`);
+      }
+    }
+
     s.totalWeeks = (obj['totalWeeks'] as number) ?? 20;
     s.firstHalfWeeks = (obj['firstHalfWeeks'] as number) ?? 10;
     const courses = (obj['courses'] as Record<string, string | number | object>[]) ?? [];
