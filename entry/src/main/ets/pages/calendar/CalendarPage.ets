@@ -2,6 +2,7 @@
 
 import { Period, PeriodType, colorFromUid } from '../../model/Period';
 import { Semester, PERIOD_TIMES } from '../../model/Semester';
+import { CourseTimeSlot } from '../../model/Course';
 import { AppKeys } from '../Index';
 import { EmptyView } from '../../components/CommonComponents';
 
@@ -15,6 +16,12 @@ interface ScheduleCourseItem {
   startPeriod: number;
   endPeriod: number;
   color: string;
+}
+
+interface MergedSlot {
+  startPeriod: number;
+  endPeriod: number;
+  location: string;
 }
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
@@ -86,17 +93,26 @@ export struct CalendarPage {
     return cells;
   }
 
+  /** 安全获取 Date 对象（处理 PersistentStorage 恢复后的字符串日期） */
+  private safeDate(d: Date | string): Date {
+    return d instanceof Date ? d : new Date(d as string);
+  }
+
   /** 直接从 semesters 获取某天的所有事件（支持历史日期，周次计算与 FlowService 一致） */
   private getDayPeriods(date: Date): Period[] {
     const periods: Period[] = [];
     const weekday = date.getDay() === 0 ? 7 : date.getDay(); // 1=周一 ... 7=周日
 
     for (const sem of this.semesters) {
+      // 安全转换日期（PersistentStorage 恢复后可能是字符串）
+      const startDate = this.safeDate(sem.startDate);
+      const endDate = this.safeDate(sem.endDate);
+
       // 计算学期第一周周一（与 FlowService 一致）
-      const semDay = sem.startDate.getDay();
+      const semDay = startDate.getDay();
       const semOffset = semDay === 0 ? -6 : 1 - semDay;
-      const semWeek1Monday = new Date(sem.startDate.getFullYear(), sem.startDate.getMonth(),
-        sem.startDate.getDate() + semOffset);
+      const semWeek1Monday = new Date(startDate.getFullYear(), startDate.getMonth(),
+        startDate.getDate() + semOffset);
 
       // 计算日期所在周的周一
       const dateDay = date.getDay();
@@ -107,49 +123,95 @@ export struct CalendarPage {
       const weekDiff = Math.floor((dateMonday.getTime() - semWeek1Monday.getTime()) / (7 * 86400000)) + 1;
 
       // 学期时间范围（±14天宽限）
-      const semStart = new Date(sem.startDate.getTime() - 14 * 86400000);
-      const semEnd = new Date(sem.endDate.getTime() + 14 * 86400000);
+      const semStart = new Date(startDate.getTime() - 14 * 86400000);
+      const semEnd = new Date(endDate.getTime() + 14 * 86400000);
       const inSemesterRange = date >= semStart && date <= semEnd;
       const validWeek = weekDiff > 0;
 
-      // 课程（需同时满足学期范围和有效周次）
+      // 判断当前日期属于前半学期还是后半学期
+      const isDateInFirstHalf = weekDiff <= sem.firstHalfWeeks;
+
+      // 课程（需同时满足学期范围、有效周次、半学期匹配）
       if (inSemesterRange && validWeek) {
-        for (const course of sem.courses) {
-          for (const slot of course.timeSlots) {
-            if (slot.weeks.includes(weekDiff) && slot.weekDay === weekday) {
-              const startMinutes = PERIOD_TIMES[slot.startPeriod - 1]?.[0] ?? 480;
-              const endMinutes = PERIOD_TIMES[slot.endPeriod - 1]?.[1] ?? 525;
-              const startTime = new Date(date.getFullYear(), date.getMonth(), date.getDate(),
-                Math.floor(startMinutes / 60), startMinutes % 60);
-              const endTime = new Date(date.getFullYear(), date.getMonth(), date.getDate(),
-                Math.floor(endMinutes / 60), endMinutes % 60);
-              periods.push(new Period(
-                `cls_${course.uid}_w${weekDiff}_d${weekday}`,
-                course.name, startTime, endTime,
-                PeriodType.CLASSES, slot.location, course.uid
-              ));
+        for (const course of (sem.courses ?? [])) {
+          // 收集该课程当天所有匹配的 timeSlots
+          const matchedSlots: CourseTimeSlot[] = [];
+          for (const slot of (course.timeSlots ?? [])) {
+            // 半学期过滤（只过滤当 isFirstHalf 为 boolean 时）
+            if (typeof slot.isFirstHalf === 'boolean' && slot.isFirstHalf !== isDateInFirstHalf) {
+              continue;
             }
+            const weeks = Array.isArray(slot.weeks) ? slot.weeks : [];
+            if (weeks.includes(weekDiff) && slot.weekDay === weekday) {
+              matchedSlots.push(slot);
+            }
+          }
+
+          if (matchedSlots.length === 0) continue;
+
+          // 按 startPeriod 排序
+          matchedSlots.sort((a, b) => a.startPeriod - b.startPeriod);
+
+          // 合并相邻的 timeSlot
+          const merged: MergedSlot[] = [];
+          let current: MergedSlot = {
+            startPeriod: matchedSlots[0].startPeriod,
+            endPeriod: matchedSlots[0].endPeriod,
+            location: matchedSlots[0].location
+          };
+          for (let i = 1; i < matchedSlots.length; i++) {
+            const slot = matchedSlots[i];
+            if (slot.startPeriod === current.endPeriod + 1) {
+              // 相邻，合并
+              current.endPeriod = slot.endPeriod;
+              if (!current.location && slot.location) current.location = slot.location;
+            } else {
+              merged.push(current);
+              current = {
+                startPeriod: slot.startPeriod,
+                endPeriod: slot.endPeriod,
+                location: slot.location
+              };
+            }
+          }
+          merged.push(current);
+
+          // 为每个合并后的 slot 生成 Period
+          for (const m of merged) {
+            const startMinutes = PERIOD_TIMES[m.startPeriod - 1]?.[0] ?? 480;
+            const endMinutes = PERIOD_TIMES[m.endPeriod - 1]?.[1] ?? 525;
+            const startTime = new Date(date.getFullYear(), date.getMonth(), date.getDate(),
+              Math.floor(startMinutes / 60), startMinutes % 60);
+            const endTime = new Date(date.getFullYear(), date.getMonth(), date.getDate(),
+              Math.floor(endMinutes / 60), endMinutes % 60);
+            periods.push(new Period(
+              `cls_${course.uid}_w${weekDiff}_d${weekday}_p${m.startPeriod}`,
+              course.name, startTime, endTime,
+              PeriodType.CLASSES, m.location, course.uid
+            ));
           }
         }
       }
 
-      // 考试（不受学期日期限制，只匹配日期）
+      // 考试（不受学期日期限制，只匹配日期；安全转换日期）
       for (const exam of sem.exams) {
-        if (this.isSameDay(exam.startTime, date)) {
+        const examStart = this.safeDate(exam.startTime);
+        if (this.isSameDay(examStart, date)) {
           periods.push(new Period(
             `exam_${exam.uid}`,
             `${exam.courseName} 考试`,
-            exam.startTime, exam.endTime,
+            examStart, this.safeDate(exam.endTime),
             PeriodType.TEST, exam.location, exam.uid
           ));
         }
       }
     }
 
-    // 合并 flowList 中的用户自定义任务
+    // 合并 flowList 中的用户自定义任务（排除已由 semesters 生成的课程/考试，避免重复）
     const flowEvents = this.flowList.filter(p => {
       const d = p.startTime;
-      return d.getFullYear() === date.getFullYear() &&
+      return p.type === PeriodType.USER &&
+        d.getFullYear() === date.getFullYear() &&
         d.getMonth() === date.getMonth() &&
         d.getDate() === date.getDate();
     });
@@ -245,7 +307,9 @@ export struct CalendarPage {
   private getCurrentSemester(): Semester | null {
     const now = new Date();
     for (const s of this.semesters) {
-      if (s.startDate <= now && now <= s.endDate) return s;
+      const sStart = this.safeDate(s.startDate);
+      const sEnd = this.safeDate(s.endDate);
+      if (sStart <= now && now <= sEnd) return s;
     }
     return this.semesters.length > 0 ? this.semesters[this.semesters.length - 1] : null;
   }
@@ -669,17 +733,40 @@ export struct CalendarPage {
       } else {
         // 日历视图
         Column() {
-          this.WeekDayHeader()
+          // 日历格子区域（可左右滑动切换月份/周）
+          Stack() {
+            Column({ space: 0 }) {
+              this.WeekDayHeader()
 
-          if (this.calendarFormat === 'month') {
-            this.MonthGrid()
-          } else {
-            this.WeekRow()
+              if (this.calendarFormat === 'month') {
+                this.MonthGrid()
+              } else {
+                this.WeekRow()
+              }
+            }
           }
+          .gesture(
+            PanGesture({ direction: PanDirection.Horizontal })
+              .onActionEnd((event: GestureEvent) => {
+                if (event.offsetX > 60) {
+                  if (this.calendarFormat === 'month') {
+                    this.prevMonth();
+                  } else {
+                    this.prevWeek();
+                  }
+                } else if (event.offsetX < -60) {
+                  if (this.calendarFormat === 'month') {
+                    this.nextMonth();
+                  } else {
+                    this.nextWeek();
+                  }
+                }
+              })
+          )
 
           Divider().strokeWidth(0.5).color($r('app.color.separator')).margin({ top: 8, bottom: 4 })
 
-          // 选中日期的事件列表（白色卡片容器 + Divider 分隔，与 ScholarPage 一致）
+          // 选中日期的事件列表（不受滑动手势影响）
           Scroll() {
             Column({ space: 0 }) {
               if (this.getDayPeriods(this.selectedDay).length === 0) {
@@ -717,37 +804,13 @@ export struct CalendarPage {
             .width('100%')
             .borderRadius(16)
             .backgroundColor($r('app.color.card_background'))
-            .margin({ left: 16, right: 16, top: 8 })
           }
           .layoutWeight(1)
           .scrollBar(BarState.Off)
           .edgeEffect(EdgeEffect.Spring)
+          .padding({ left: 16, right: 16, top: 8 })
         }
         .layoutWeight(1)
-        .gesture(
-          PanGesture({ direction: PanDirection.Horizontal })
-            .onActionStart(() => {
-              this.isSwipeHandled = false;
-            })
-            .onActionUpdate((event: GestureEvent) => {
-              if (this.isSwipeHandled) return;
-              if (event.offsetX > 60) {
-                this.isSwipeHandled = true;
-                if (this.calendarFormat === 'month') {
-                  this.prevMonth();
-                } else {
-                  this.prevWeek();
-                }
-              } else if (event.offsetX < -60) {
-                this.isSwipeHandled = true;
-                if (this.calendarFormat === 'month') {
-                  this.nextMonth();
-                } else {
-                  this.nextWeek();
-                }
-              }
-            })
-        )
       }
     }
     .width('100%')

@@ -1484,9 +1484,9 @@ function parseCourseScheduleFromJson(json: string, semesterId: string): Course[]
       }
 
       // 解析学期半段（秋/春=前半, 冬/夏=后半, 秋冬/春夏=全学期）
-      const isFirstHalf = xxq.includes('秋') || xxq.includes('春');
-      const isSecondHalf = xxq.includes('冬') || xxq.includes('夏');
-      const isFullSemester = (xxq.includes('秋冬') || xxq.includes('春夏')) && !isFirstHalf && !isSecondHalf;
+      const isFullSemester = xxq.includes('秋冬') || xxq.includes('春夏');
+      const isFirstHalf = !isFullSemester && (xxq.includes('秋') || xxq.includes('春'));
+      const isSecondHalf = !isFullSemester && (xxq.includes('冬') || xxq.includes('夏'));
 
       const targetCourse = courseMap.get(courseKey);
       if (targetCourse) {
