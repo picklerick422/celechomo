@@ -3,7 +3,7 @@
 import { Period, PeriodType, colorFromUid } from '../../model/Period';
 import { Semester, PERIOD_TIMES } from '../../model/Semester';
 import { AppKeys } from '../Index';
-import { ColorIndicator, EmptyView } from '../../components/CommonComponents';
+import { EmptyView } from '../../components/CommonComponents';
 
 type CalendarFormat = 'month' | 'week';
 type ViewMode = 'calendar' | 'schedule';
@@ -15,21 +15,6 @@ interface ScheduleCourseItem {
   startPeriod: number;
   endPeriod: number;
   color: string;
-}
-
-interface ScheduleCourseItemWithTeacher {
-  name: string;
-  location: string;
-  weekDay: number;
-  startPeriod: number;
-  endPeriod: number;
-  color: string;
-  teacher: string;
-}
-
-interface CustomGpaResult {
-  gpa: number;
-  credits: number;
 }
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
@@ -51,6 +36,7 @@ export struct CalendarPage {
   @State viewMode: ViewMode = 'calendar';
   @State isFirstHalf: boolean = true;
   @State isRefreshing: boolean = false;
+  @State isSwipeHandled: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
 
@@ -69,9 +55,8 @@ export struct CalendarPage {
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
 
-    // 周一起始，firstDay.getDay(): 0=日 1=一 ... 6=六
     let startOffset = firstDay.getDay() - 1;
-    if (startOffset < 0) startOffset = 6; // 周日
+    if (startOffset < 0) startOffset = 6;
 
     const cells: Date[] = [];
     for (let i = startOffset; i > 0; i--) {
@@ -101,19 +86,81 @@ export struct CalendarPage {
     return cells;
   }
 
-  /** 某天是否有事件 */
-  private hasEvents(date: Date): boolean {
-    return this.getEventsForDay(date).length > 0;
-  }
+  /** 直接从 semesters 获取某天的所有事件（支持历史日期，周次计算与 FlowService 一致） */
+  private getDayPeriods(date: Date): Period[] {
+    const periods: Period[] = [];
+    const weekday = date.getDay() === 0 ? 7 : date.getDay(); // 1=周一 ... 7=周日
 
-  /** 获取某天的事件列表 */
-  private getEventsForDay(date: Date): Period[] {
-    return this.flowList.filter(p => {
+    for (const sem of this.semesters) {
+      // 计算学期第一周周一（与 FlowService 一致）
+      const semDay = sem.startDate.getDay();
+      const semOffset = semDay === 0 ? -6 : 1 - semDay;
+      const semWeek1Monday = new Date(sem.startDate.getFullYear(), sem.startDate.getMonth(),
+        sem.startDate.getDate() + semOffset);
+
+      // 计算日期所在周的周一
+      const dateDay = date.getDay();
+      const dateOffset = dateDay === 0 ? -6 : 1 - dateDay;
+      const dateMonday = new Date(date.getFullYear(), date.getMonth(), date.getDate() + dateOffset);
+
+      // 计算当前是第几周
+      const weekDiff = Math.floor((dateMonday.getTime() - semWeek1Monday.getTime()) / (7 * 86400000)) + 1;
+
+      // 学期时间范围（±14天宽限）
+      const semStart = new Date(sem.startDate.getTime() - 14 * 86400000);
+      const semEnd = new Date(sem.endDate.getTime() + 14 * 86400000);
+      const inSemesterRange = date >= semStart && date <= semEnd;
+      const validWeek = weekDiff > 0;
+
+      // 课程（需同时满足学期范围和有效周次）
+      if (inSemesterRange && validWeek) {
+        for (const course of sem.courses) {
+          for (const slot of course.timeSlots) {
+            if (slot.weeks.includes(weekDiff) && slot.weekDay === weekday) {
+              const startMinutes = PERIOD_TIMES[slot.startPeriod - 1]?.[0] ?? 480;
+              const endMinutes = PERIOD_TIMES[slot.endPeriod - 1]?.[1] ?? 525;
+              const startTime = new Date(date.getFullYear(), date.getMonth(), date.getDate(),
+                Math.floor(startMinutes / 60), startMinutes % 60);
+              const endTime = new Date(date.getFullYear(), date.getMonth(), date.getDate(),
+                Math.floor(endMinutes / 60), endMinutes % 60);
+              periods.push(new Period(
+                `cls_${course.uid}_w${weekDiff}_d${weekday}`,
+                course.name, startTime, endTime,
+                PeriodType.CLASSES, slot.location, course.uid
+              ));
+            }
+          }
+        }
+      }
+
+      // 考试（不受学期日期限制，只匹配日期）
+      for (const exam of sem.exams) {
+        if (this.isSameDay(exam.startTime, date)) {
+          periods.push(new Period(
+            `exam_${exam.uid}`,
+            `${exam.courseName} 考试`,
+            exam.startTime, exam.endTime,
+            PeriodType.TEST, exam.location, exam.uid
+          ));
+        }
+      }
+    }
+
+    // 合并 flowList 中的用户自定义任务
+    const flowEvents = this.flowList.filter(p => {
       const d = p.startTime;
       return d.getFullYear() === date.getFullYear() &&
         d.getMonth() === date.getMonth() &&
         d.getDate() === date.getDate();
     });
+    periods.push(...flowEvents);
+
+    return periods.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+  }
+
+  /** 获取某天的前 N 个事件，用于日历标记 */
+  private getDayEventMarkers(date: Date): Period[] {
+    return this.getDayPeriods(date).slice(0, 3);
   }
 
   private isSameDay(a: Date, b: Date): boolean {
@@ -147,6 +194,14 @@ export struct CalendarPage {
       this.focusedMonth.getMonth() + 1, 1);
   }
 
+  private prevWeek(): void {
+    this.selectedDay = new Date(this.selectedDay.getTime() - 7 * 86400000);
+  }
+
+  private nextWeek(): void {
+    this.selectedDay = new Date(this.selectedDay.getTime() + 7 * 86400000);
+  }
+
   private getPeriodColor(period: Period): string {
     switch (period.type) {
       case PeriodType.TEST: return '#F48FB1';
@@ -159,6 +214,30 @@ export struct CalendarPage {
     const fmtTime = (d: Date) =>
       `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
     return `${fmtTime(period.startTime)} - ${fmtTime(period.endTime)}`;
+  }
+
+  private getEventTypeLabel(period: Period): string {
+    switch (period.type) {
+      case PeriodType.TEST: return '考试';
+      case PeriodType.CLASSES: return '课程';
+      default: return '任务';
+    }
+  }
+
+  private getEventTypeColor(period: Period): string {
+    switch (period.type) {
+      case PeriodType.TEST: return '#F48FB1';
+      case PeriodType.CLASSES: return '#2196F3';
+      default: return '#4CAF50';
+    }
+  }
+
+  private getEventTypeBg(period: Period): string {
+    switch (period.type) {
+      case PeriodType.TEST: return '#FCE4EC';
+      case PeriodType.CLASSES: return '#E3F2FD';
+      default: return '#E8F5E9';
+    }
   }
 
   // ============= 课表视图 =============
@@ -202,7 +281,6 @@ export struct CalendarPage {
   @Builder
   CalendarHeader() {
     Row() {
-      // 月份导航
       if (this.calendarFormat === 'month') {
         Button({ type: ButtonType.Circle }) {
           Image($r('sys.media.ohos_ic_public_arrow_left'))
@@ -210,7 +288,7 @@ export struct CalendarPage {
             .fillColor($r('app.color.text_secondary'))
         }
         .width(32).height(32)
-        .backgroundColor(Color.Transparent)
+        .backgroundColor($r('app.color.progress_bg'))
         .onClick(() => this.prevMonth())
       }
 
@@ -231,7 +309,7 @@ export struct CalendarPage {
             .fillColor($r('app.color.text_secondary'))
         }
         .width(32).height(32)
-        .backgroundColor(Color.Transparent)
+        .backgroundColor($r('app.color.progress_bg'))
         .onClick(() => this.nextMonth())
       }
     }
@@ -259,7 +337,7 @@ export struct CalendarPage {
           .fontColor($r('app.color.text_secondary'))
           .width('14.28%')
           .textAlign(TextAlign.Center)
-          .padding({ bottom: 8 })
+          .padding({ bottom: 6 })
       })
     }
     .width('100%')
@@ -294,7 +372,7 @@ export struct CalendarPage {
 
   @Builder
   DayCell(date: Date) {
-    Column({ space: 3 }) {
+    Column({ space: 2 }) {
       Text(date.getDate().toString())
         .fontSize(15)
         .fontColor(
@@ -311,7 +389,7 @@ export struct CalendarPage {
             this.isToday(date) ? $r('app.color.today_bg') :
               Color.Transparent
         )
-        .fontWeight(this.isToday(date) || this.isSameDay(date, this.selectedDay) ? 600 : FontWeight.Regular) // SemiBold : Regular
+        .fontWeight(this.isToday(date) || this.isSameDay(date, this.selectedDay) ? 600 : FontWeight.Regular)
         .shadow(this.isSameDay(date, this.selectedDay) ? {
           radius: 8,
           color: '#30007AFF',
@@ -324,19 +402,30 @@ export struct CalendarPage {
           offsetY: 0
         })
 
-      // 事件指示点
-      Row()
-        .width(5)
-        .height(5)
-        .borderRadius(2.5)
-        .backgroundColor(this.hasEvents(date) ?
-          (this.isSameDay(date, this.selectedDay) ? Color.White : $r('app.color.color_blue')) :
-          Color.Transparent
-        )
+      // 事件标记（课程=彩色圆点，考试=彩色方块）
+      Row({ space: 2 }) {
+        ForEach(this.getDayEventMarkers(date), (period: Period) => {
+          if (period.type === PeriodType.TEST) {
+            Row()
+              .width(5)
+              .height(5)
+              .borderRadius(1.5)
+              .backgroundColor(this.getPeriodColor(period))
+          } else {
+            Row()
+              .width(4)
+              .height(4)
+              .borderRadius(2)
+              .backgroundColor(this.getPeriodColor(period))
+          }
+        }, (period: Period) => period.uid)
+      }
+      .height(5)
+      .justifyContent(FlexAlign.Center)
     }
     .width('14.28%')
     .alignItems(HorizontalAlign.Center)
-    .padding({ top: 6, bottom: 6 })
+    .padding({ top: 4, bottom: 4 })
     .onClick(() => {
       this.selectedDay = date;
       if (!this.isCurrentMonth(date)) {
@@ -345,55 +434,63 @@ export struct CalendarPage {
     })
   }
 
+  /** 日程卡片 - 与 ScholarPage CourseListItem 风格保持一致 */
   @Builder
   EventCard(period: Period) {
-    Row({ space: 14 }) {
-      // 左侧色条
-      Column()
-        .width(4)
-        .height('100%')
-        .borderRadius(2)
-        .backgroundColor(this.getPeriodColor(period))
+    Row({ space: 12 }) {
+      // 左侧圆形色块（事件首字）
+      Column() {
+        Text(period.summary.length > 0 ? period.summary.substring(0, 1) : '?')
+          .fontSize(14)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.White)
+      }
+      .width(36)
+      .height(36)
+      .borderRadius(10)
+      .backgroundColor(this.getPeriodColor(period))
+      .justifyContent(FlexAlign.Center)
 
-      Column({ space: 6 }) {
+      // 中间内容
+      Column({ space: 3 }) {
         Text(period.summary)
-          .fontSize(16)
+          .fontSize(14)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Row({ space: 10 }) {
+
+        Row({ space: 8 }) {
           Text(this.formatEventTime(period))
-            .fontSize(12)
+            .fontSize(11)
             .fontColor($r('app.color.text_secondary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
           if (period.location.length > 0) {
             Text(period.location)
-              .fontSize(12)
+              .fontSize(11)
               .fontColor($r('app.color.text_tertiary'))
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
           }
+          Text(this.getEventTypeLabel(period))
+            .fontSize(10)
+            .fontColor(this.getEventTypeColor(period))
+            .padding({ left: 4, right: 4 })
+            .backgroundColor(this.getEventTypeBg(period))
+            .borderRadius(4)
         }
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
-    .backgroundColor($r('app.color.card_background'))
-    .shadow({
-      radius: 8,
-      color: '#10000000',
-      offsetX: 0,
-      offsetY: 3
-    })
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
   }
 
   @Builder
   ScheduleGrid() {
     Column() {
-      // 切换前/后半学期
       Row({ space: 8 }) {
         Text('前半学期')
           .fontSize(13)
@@ -415,7 +512,6 @@ export struct CalendarPage {
       }
       .padding({ left: 16, top: 8, bottom: 8 })
 
-      // 表头（星期列）
       Row() {
         Text('').width(36)
         ForEach(WEEKDAYS, (day: string) => {
@@ -430,9 +526,7 @@ export struct CalendarPage {
       .padding({ left: 4, right: 4, bottom: 4 })
 
       Scroll() {
-        // 课表网格 - 使用 Stack 实现绝对定位
         Stack({ alignContent: Alignment.TopStart }) {
-          // 背景格子线
           Column() {
             ForEach(PERIOD_LABELS, (label: string, idx: number) => {
               Row() {
@@ -463,7 +557,6 @@ export struct CalendarPage {
             })
           }
 
-          // 课程卡片
           ForEach(this.getScheduleCourses(), (course: ScheduleCourseItem) => {
             this.CourseCard(course, ROW_HEIGHT)
           }, (c: ScheduleCourseItem) => `${c.weekDay}-${c.startPeriod}`)
@@ -507,7 +600,7 @@ export struct CalendarPage {
 
   build() {
     Column() {
-      // 标题栏 - 现代化设计
+      // 标题栏
       Row() {
         Column({ space: 4 }) {
           Text(this.viewMode === 'calendar' ?
@@ -529,56 +622,40 @@ export struct CalendarPage {
         Blank()
 
         if (this.viewMode === 'calendar') {
-          // 格式切换
-          Button(this.calendarFormat === 'month' ? '周视图' : '月视图')
+          Button(this.calendarFormat === 'month' ? '周' : '月')
             .fontSize(13)
-            .fontColor(Color.White)
-            .backgroundColor($r('app.color.color_blue'))
-            .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+            .fontColor($r('app.color.color_blue'))
+            .backgroundColor($r('app.color.selected_day_bg'))
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
             .borderRadius(16)
-            .shadow({
-              radius: 6,
-              color: '#30007AFF',
-              offsetX: 0,
-              offsetY: 3
-            })
             .onClick(() => {
               this.calendarFormat = this.calendarFormat === 'month' ? 'week' : 'month';
             })
 
-          // 今天按钮
-          Button('今天')
+          Button('今')
             .fontSize(13)
-            .backgroundColor($r('app.color.progress_bg'))
             .fontColor($r('app.color.text_secondary'))
-            .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+            .backgroundColor($r('app.color.progress_bg'))
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
             .borderRadius(16)
             .onClick(() => this.goToToday())
 
-          // 添加日程
           Button({ type: ButtonType.Circle }) {
-            Text('+').fontSize(20).fontColor(Color.White)
+            Text('+').fontSize(18).fontColor($r('app.color.color_blue'))
           }
-          .width(36).height(36)
-          .backgroundColor($r('app.color.color_blue'))
-          .shadow({
-            radius: 8,
-            color: '#30007AFF',
-            offsetX: 0,
-            offsetY: 4
-          })
+          .width(34).height(34)
+          .backgroundColor($r('app.color.selected_day_bg'))
           .onClick(() => {
             const param: Record<string, ESObject> = { "isFixed": true };
             this.navStack.pushPathByName('TaskEdit', param);
           })
         }
 
-        // 视图切换
         Button({ type: ButtonType.Circle }) {
           Text(this.viewMode === 'calendar' ? '📅' : '📋')
             .fontSize(16)
         }
-        .width(36).height(36)
+        .width(34).height(34)
         .backgroundColor($r('app.color.progress_bg'))
         .onClick(() => {
           this.viewMode = this.viewMode === 'calendar' ? 'schedule' : 'calendar';
@@ -588,7 +665,6 @@ export struct CalendarPage {
       .padding({ left: 20, right: 16, top: this.topRectHeight + 10, bottom: 12 })
 
       if (this.viewMode === 'schedule') {
-        // 课表视图
         this.ScheduleGrid()
       } else {
         // 日历视图
@@ -603,29 +679,75 @@ export struct CalendarPage {
 
           Divider().strokeWidth(0.5).color($r('app.color.separator')).margin({ top: 8, bottom: 4 })
 
-          // 选中日期的事件列表
+          // 选中日期的事件列表（白色卡片容器 + Divider 分隔，与 ScholarPage 一致）
           Scroll() {
-            Column({ space: 8 }) {
-              if (this.getEventsForDay(this.selectedDay).length === 0) {
+            Column({ space: 0 }) {
+              if (this.getDayPeriods(this.selectedDay).length === 0) {
                 EmptyView({
                   icon: '📅',
                   title: '今日无事件',
                   subtitle: ''
                 })
               } else {
-                ForEach(this.getEventsForDay(this.selectedDay), (p: Period) => {
+                // 标题栏
+                Row() {
+                  Text('日程')
+                    .fontSize(18)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor($r('app.color.text_primary'))
+                  Text(`${this.getDayPeriods(this.selectedDay).length} 项`)
+                    .fontSize(13)
+                    .fontColor($r('app.color.text_secondary'))
+                }
+                .width('100%')
+                .padding({ left: 16, right: 16, top: 12, bottom: 8 })
+
+                ForEach(this.getDayPeriods(this.selectedDay), (p: Period, index: number) => {
                   this.EventCard(p)
+                  if (index < this.getDayPeriods(this.selectedDay).length - 1) {
+                    Divider()
+                      .strokeWidth(0.5)
+                      .color($r('app.color.progress_bg'))
+                      .margin({ left: 56 })
+                  }
                 }, (p: Period) => p.uid)
               }
               Blank().height(64 + this.bottomRectHeight + 20)
             }
-            .padding({ left: 16, right: 16, top: 8 })
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .margin({ left: 16, right: 16, top: 8 })
           }
           .layoutWeight(1)
           .scrollBar(BarState.Off)
           .edgeEffect(EdgeEffect.Spring)
         }
         .layoutWeight(1)
+        .gesture(
+          PanGesture({ direction: PanDirection.Horizontal })
+            .onActionStart(() => {
+              this.isSwipeHandled = false;
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              if (this.isSwipeHandled) return;
+              if (event.offsetX > 60) {
+                this.isSwipeHandled = true;
+                if (this.calendarFormat === 'month') {
+                  this.prevMonth();
+                } else {
+                  this.prevWeek();
+                }
+              } else if (event.offsetX < -60) {
+                this.isSwipeHandled = true;
+                if (this.calendarFormat === 'month') {
+                  this.nextMonth();
+                } else {
+                  this.nextWeek();
+                }
+              }
+            })
+        )
       }
     }
     .width('100%')

@@ -1483,11 +1483,23 @@ function parseCourseScheduleFromJson(json: string, semesterId: string): Course[]
         }
       }
 
-      // 解析学期半段（秋/春=前半, 冬/夏=后半）
+      // 解析学期半段（秋/春=前半, 冬/夏=后半, 秋冬/春夏=全学期）
       const isFirstHalf = xxq.includes('秋') || xxq.includes('春');
+      const isSecondHalf = xxq.includes('冬') || xxq.includes('夏');
+      const isFullSemester = (xxq.includes('秋冬') || xxq.includes('春夏')) && !isFirstHalf && !isSecondHalf;
 
-      const courseSlot = new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, isFirstHalf);
-      courseMap.get(courseKey)!.timeSlots.push(courseSlot);
+      const targetCourse = courseMap.get(courseKey);
+      if (targetCourse) {
+        // 全学期课程：生成两个 timeSlot（前半+后半）
+        if (isFullSemester) {
+          targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, true));
+          targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, false));
+        } else {
+          targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, isFirstHalf));
+        }
+      } else {
+        console.warn(`[NetworkService] courseKey not found in map: ${courseKey}`);
+      }
     }
     return Array.from(courseMap.values());
   } catch {

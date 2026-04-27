@@ -584,39 +584,6 @@ export struct ScholarPage {
       }
       console.info('[ScholarPage] All semester fetches completed');
 
-      // ═══════════════════════════════════════════════════════
-      // 全局去重：xxq 为空的课程可能同时出现在多个学期，优先保留有成绩的
-      // ═══════════════════════════════════════════════════════
-      const courseBestSemester = new Map<string, string>(); // key → best semester id
-      for (const sem of semestersToFetch) {
-        for (const c of (sem.courses ?? [])) {
-          const key = c.courseId.length > 0 ? c.courseId : c.name;
-          if (!courseBestSemester.has(key)) {
-            courseBestSemester.set(key, sem.id);
-          } else {
-            const bestSemId = courseBestSemester.get(key)!;
-            const bestSem = semestersToFetch.find(s => s.id === bestSemId);
-            // 如果当前学期有成绩而最佳学期没有，更新最佳学期
-            if (c.hasGrade && bestSem && !bestSem.courses.find(bc => (bc.courseId || bc.name) === key)?.hasGrade) {
-              courseBestSemester.set(key, sem.id);
-            }
-          }
-        }
-      }
-      for (const sem of semestersToFetch) {
-        const beforeCount = sem.courses.length;
-        sem.courses = sem.courses.filter(c => {
-          const key = c.courseId.length > 0 ? c.courseId : c.name;
-          const bestId = courseBestSemester.get(key);
-          // 如果课程被分配到了其他学期，从当前学期移除
-          if (bestId && bestId !== sem.id) return false;
-          return true;
-        });
-        if (sem.courses.length !== beforeCount) {
-          console.info(`[ScholarPage] ${sem.id}: dedup ${beforeCount} → ${sem.courses.length} courses`);
-        }
-      }
-
       // 打印每个学期的最终数据量，并计算 GPA
       for (const sem of semestersToFetch) {
         console.info(`[ScholarPage] Semester ${sem.id} final state: ${sem.courses?.length ?? 0} courses, ${sem.exams?.length ?? 0} exams, ${sem.todos?.length ?? 0} todos`);

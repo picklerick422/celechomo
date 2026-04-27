@@ -59,9 +59,16 @@ export function generateFlowList(
     const semester = activeSemester;
     // 以学期起始日所在周的周一作为第1周的周一
     const semWeek1Monday = getWeekStart(semester.startDate);
+    console.info(`[FlowService] semWeek1Monday=${semWeek1Monday.toISOString()}, endDate=${endDate.toISOString()}`);
+
+    let courseCount = 0;
+    let slotCount = 0;
+    let periodCount = 0;
 
     for (const course of semester.courses) {
+      courseCount++;
       for (const slot of course.timeSlots) {
+        slotCount++;
         for (const week of slot.weeks) {
           // 计算该周周一，再偏移到对应星期几
           const weekMonday = new Date(semWeek1Monday.getTime() + (week - 1) * 7 * 86400000);
@@ -73,7 +80,15 @@ export function generateFlowList(
             startTimeParts[0], startTimeParts[1]);
           const endTime = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(),
             endTimeParts[0], endTimeParts[1]);
+
+          // 诊断：检查 invalid date
+          if (isNaN(startTime.getTime())) {
+            console.warn(`[FlowService] Invalid startTime: course=${course.name}, week=${week}, weekDay=${slot.weekDay}, startPeriod=${slot.startPeriod}`);
+            continue;
+          }
+
           if (startTime >= now && startTime <= endDate) {
+            periodCount++;
             fixedPeriods.push(new Period(
               `cls_${course.uid}_w${week}_d${slot.weekDay}`,
               course.name,
@@ -87,6 +102,7 @@ export function generateFlowList(
         }
       }
     }
+    console.info(`[FlowService] Generated ${periodCount} class periods from ${courseCount} courses, ${slotCount} slots`);
 
     // 添加考试
     for (const exam of semester.exams) {

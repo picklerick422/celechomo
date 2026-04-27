@@ -168,7 +168,9 @@ export struct CourseSchedulePage {
       this.pathStack = ctx.pathStack;
       const params = ctx.pathInfo.param as Record<string, string | boolean>;
       this.semesterId = (params?.['semesterId'] as string) ?? '';
-      this.isFirstHalf = params?.['isFirstHalf'] !== false;
+      // 导航参数可能被序列化为字符串，需要同时处理 boolean 和 string 形式
+      const rawIsFirstHalf = params?.['isFirstHalf'];
+      this.isFirstHalf = rawIsFirstHalf === true || rawIsFirstHalf === 'true';
     })
   }
 
