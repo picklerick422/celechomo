@@ -20,7 +20,7 @@ export struct GradeDetailPage {
   private pathStack: NavPathStack | null = null;
 
   private get currentSemester(): Semester | null {
-    return this.semesters[this.semesterIndex] ?? null;
+    return this.semesters[this.semesterIndex] || null;
   }
 
   private fmt(val: number): string {
@@ -80,7 +80,7 @@ export struct GradeDetailPage {
         Scroll() {
           Column({ space: 16 }) {
             // 成绩概览 6 卡片
-            if (this.currentSemester !== null) {
+            if (this.currentSemester) {
               Grid() {
                 GridItem() { TwoLineCard({ title: '学年学分', value: this.currentSemester.gpaInfo.yearCredits.toFixed(1) }).padding(12) }
                 GridItem() { TwoLineCard({ title: '学年均绩', value: this.fmt(this.currentSemester.gpaInfo.yearGpa) }).padding(12) }
@@ -200,7 +200,7 @@ export struct GradeDetailPage {
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
       const params = ctx.pathInfo.param as Record<string, number>;
-      this.semesterIndex = params?.['semesterIndex'] ?? this.semesters.length - 1;
+      this.semesterIndex = params?.['semesterIndex'] ?? Math.max(0, this.semesters.length - 1);
     })
   }
 }

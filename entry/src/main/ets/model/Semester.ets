@@ -99,7 +99,7 @@ export interface SemesterJson {
   startDate: string;
   endDate: string;
   totalWeeks: number;
-  firstHalfWeeks: number;
+  halfSemesterWeeks: number;
   courses: CourseJson[];
   exams: ExamJson[];
   todos: TodoJson[];
@@ -111,8 +111,8 @@ export class Semester {
   name: string = '';        // "2023-2024春"
   startDate: Date = new Date();
   endDate: Date = new Date();
-  totalWeeks: number = 20;
-  firstHalfWeeks: number = 10; // 前半学期周数
+  totalWeeks: number = 16;
+  halfSemesterWeeks: number = 8; // 每个半学期的周数（秋/冬/春/夏各8周）
   courses: Course[] = [];
   exams: Exam[] = [];
   todos: Todo[] = [];
@@ -123,19 +123,36 @@ export class Semester {
     return this.name.includes('春') || this.name.includes('2') || this.name.includes('summer');
   }
 
-  /** 获取当前周次（从1开始，超出返回0） */
+  /** 获取当前周次（从1开始，超出返回0）
+   * 以学期起始日所在周的周一作为第1周的周一，与 FlowService 和 CalendarPage 保持一致
+   */
   currentWeek(now: Date): number {
-    const diff = now.getTime() - this.startDate.getTime();
-    if (diff < 0) return 0;
-    const week = Math.floor(diff / (7 * 86400000)) + 1;
-    return week > this.totalWeeks ? 0 : week;
+    if (now.getTime() < this.startDate.getTime()) return 0;
+
+    const semDay = this.startDate.getDay();
+    const semOffset = semDay === 0 ? -6 : 1 - semDay;
+    const semWeek1Monday = new Date(this.startDate.getFullYear(), this.startDate.getMonth(),
+      this.startDate.getDate() + semOffset);
+
+    const nowDay = now.getDay();
+    const nowOffset = nowDay === 0 ? -6 : 1 - nowDay;
+    const nowMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + nowOffset);
+
+    const weekDiff = Math.floor((nowMonday.getTime() - semWeek1Monday.getTime()) / (7 * 86400000)) + 1;
+    return weekDiff > this.totalWeeks ? 0 : weekDiff;
   }
 
-  /** 获取周次描述 e.g. "春一周" */
+  /** 获取周次描述 e.g. "春1周" / "夏3周" / "秋8周" / "冬2周" */
   weekLabel(week: number): string {
-    const prefix = this.isSpring ? '春' : '秋';
-    const half = week <= this.firstHalfWeeks ? '前' : '后';
-    return `${prefix}${half}${week}周`;
+    if (this.isSpring) {
+      const half = week <= this.halfSemesterWeeks ? '春' : '夏';
+      const actualWeek = week <= this.halfSemesterWeeks ? week : week - this.halfSemesterWeeks;
+      return `${half}${actualWeek}周`;
+    } else {
+      const half = week <= this.halfSemesterWeeks ? '秋' : '冬';
+      const actualWeek = week <= this.halfSemesterWeeks ? week : week - this.halfSemesterWeeks;
+      return `${half}${actualWeek}周`;
+    }
   }
 
   toJSON(): SemesterJson {
@@ -145,7 +162,7 @@ export class Semester {
       startDate: this.startDate.toISOString(),
       endDate: this.endDate.toISOString(),
       totalWeeks: this.totalWeeks,
-      firstHalfWeeks: this.firstHalfWeeks,
+      halfSemesterWeeks: this.halfSemesterWeeks,
       courses: this.courses.map(c => c.toJSON() as CourseJson),
       exams: this.exams.map(e => e.toJSON() as ExamJson),
       todos: this.todos.map(t => t.toJSON() as TodoJson),
@@ -187,8 +204,9 @@ export class Semester {
       }
     }
 
-    s.totalWeeks = (obj['totalWeeks'] as number) ?? 20;
-    s.firstHalfWeeks = (obj['firstHalfWeeks'] as number) ?? 10;
+    s.totalWeeks = (obj['totalWeeks'] as number) ?? 16;
+    // 兼容性：旧数据使用 firstHalfWeeks（默认10），新数据使用 halfSemesterWeeks（默认8）
+    s.halfSemesterWeeks = (obj['halfSemesterWeeks'] as number) ?? (obj['firstHalfWeeks'] as number) ?? 8;
     const courses = (obj['courses'] as Record<string, string | number | object>[]) ?? [];
     s.courses = courses.map(c => Course.fromJSON(c as Record<string, string | number | object>));
     const exams = (obj['exams'] as Record<string, string>[]) ?? [];

@@ -303,7 +303,7 @@ export struct ScholarPage {
       const results = await Promise.all([
         fetchGrades(sem.id, timeoutMs),
         fetchCourseSchedule(sem.id, timeoutMs),
-        fetchExams(sem.id, timeoutMs),
+        fetchExams(sem.id, timeoutMs, sem.startDate, sem.endDate),
         fetchTodos(sem.id, timeoutMs)
       ]);
       const gradesResult = results[0];
@@ -400,7 +400,7 @@ export struct ScholarPage {
       const results = await Promise.all([
         fetchGrades(sem.id, apiTimeout),
         fetchCourseSchedule(sem.id, apiTimeout),
-        fetchExams(sem.id, apiTimeout),
+        fetchExams(sem.id, apiTimeout, sem.startDate, sem.endDate),
         fetchTodos(sem.id, apiTimeout)
       ]);
 
@@ -888,8 +888,8 @@ export struct ScholarPage {
 
           // 前后半学期卡片
           Row({ space: 8 }) {
-            this.HalfCourseCard('前半学期', true, this._currentSemester!)
-            this.HalfCourseCard('后半学期', false, this._currentSemester!)
+            this.HalfCourseCard(this._currentSemester!.isSpring ? '春学期' : '秋学期', true, this._currentSemester!)
+            this.HalfCourseCard(this._currentSemester!.isSpring ? '夏学期' : '冬学期', false, this._currentSemester!)
           }
           .padding({ left: 12, right: 12, bottom: 8 })
 
@@ -1074,7 +1074,7 @@ export struct ScholarPage {
         .fontSize(12)
         .fontColor($r('app.color.text_secondary'))
       Row({ space: 4 }) {
-        Text(`${sem.courses.filter(c => c.timeSlots && c.timeSlots.some(s => s.isFirstHalf === isFirst)).length}`)
+        Text(`${sem.courses.filter(c => c.timeSlots && c.timeSlots.some(s => (isFirst ? s.halfType === 'first' : s.halfType === 'second'))).length}`)
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.color_blue'))

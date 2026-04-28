@@ -2,7 +2,7 @@
 
 import { Period, PeriodType, colorFromUid } from '../../model/Period';
 import { Semester, PERIOD_TIMES } from '../../model/Semester';
-import { CourseTimeSlot } from '../../model/Course';
+import { CourseTimeSlot, Exam } from '../../model/Course';
 import { AppKeys } from '../Index';
 import { EmptyView } from '../../components/CommonComponents';
 
@@ -43,9 +43,92 @@ export struct CalendarPage {
   @State viewMode: ViewMode = 'calendar';
   @State isFirstHalf: boolean = true;
   @State isRefreshing: boolean = false;
-  @State isSwipeHandled: boolean = false;
+  @State swiperIndex: number = 2;
+  @State swiperDuration: number = 250;
+  @State isSwiperResetting: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
+
+  /** 获取当前学期的半学期标签 */
+  private getHalfSemesterLabels(): [string, string] {
+    const sem = this.getCurrentSemester();
+    if (!sem) return ['前半学期', '后半学期'];
+    if (sem.isSpring) return ['春学期', '夏学期'];
+    return ['秋学期', '冬学期'];
+  }
+
+  /** Swiper辅助：获取指定索引对应的月份（index 0~4，中心2=当月） */
+  private getSwiperMonth(index: number): Date {
+    const offset = index - 2;
+    return new Date(this.focusedMonth.getFullYear(), this.focusedMonth.getMonth() + offset, 1);
+  }
+
+  /** Swiper辅助：获取指定索引对应的周一开始日期 */
+  private getSwiperWeekMonday(index: number): Date {
+    const currentMonday = this.getWeekMonday(this.selectedDay);
+    const offset = (index - 2) * 7;
+    const monday = new Date(currentMonday);
+    monday.setDate(currentMonday.getDate() + offset);
+    return monday;
+  }
+
+  /** 计算指定月份Grid所需高度 */
+  private getMonthGridHeightForMonth(month: Date): number {
+    const rowCount = this.getMonthCellsForMonth(month).length / 7;
+    return rowCount * 50 + (rowCount - 1) * 2;
+  }
+
+  /** 获取指定日期所在周的周一 */
+  private getWeekMonday(date: Date): Date {
+    const day = date.getDay();
+    const offset = day === 0 ? -6 : 1 - day;
+    const monday = new Date(date);
+    monday.setDate(date.getDate() + offset);
+    return monday;
+  }
+
+  /** 判断两日期是否同月 */
+  private isSameMonth(a: Date, b: Date): boolean {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+  }
+
+  /** 获取指定月份的月历格子 */
+  private getMonthCellsForMonth(month: Date): Date[] {
+    const year = month.getFullYear();
+    const m = month.getMonth();
+    const firstDay = new Date(year, m, 1);
+    const lastDay = new Date(year, m + 1, 0);
+    let startOffset = firstDay.getDay() - 1;
+    if (startOffset < 0) startOffset = 6;
+    const cells: Date[] = [];
+    for (let i = startOffset; i > 0; i--) {
+      cells.push(new Date(year, m, 1 - i));
+    }
+    for (let d = 1; d <= lastDay.getDate(); d++) {
+      cells.push(new Date(year, m, d));
+    }
+    while (cells.length % 7 !== 0) {
+      cells.push(new Date(year, m + 1, cells.length - lastDay.getDate() - startOffset + 1));
+    }
+    return cells;
+  }
+
+  /** 获取指定月份的行模板（5行或6行） */
+  private getMonthRowTemplateForMonth(month: Date): string {
+    const rowCount = this.getMonthCellsForMonth(month).length / 7;
+    return Array(rowCount).fill('1fr').join(' ');
+  }
+
+  /** 获取指定周周一的日期格子 */
+  private getWeekCellsForWeek(monday: Date): Date[] {
+    const cells: Date[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      cells.push(d);
+    }
+    return cells;
+  }
 
   aboutToAppear(): void {
     const today = new Date();
@@ -94,8 +177,15 @@ export struct CalendarPage {
   }
 
   /** 安全获取 Date 对象（处理 PersistentStorage 恢复后的字符串日期） */
-  private safeDate(d: Date | string): Date {
-    return d instanceof Date ? d : new Date(d as string);
+  private safeDate(d: Date | string | undefined | null): Date {
+    if (d === undefined || d === null) {
+      return new Date(0);
+    }
+    if (d instanceof Date) {
+      return isNaN(d.getTime()) ? new Date(0) : d;
+    }
+    const parsed = new Date(d as string);
+    return isNaN(parsed.getTime()) ? new Date(0) : parsed;
   }
 
   /** 直接从 semesters 获取某天的所有事件（支持历史日期，周次计算与 FlowService 一致） */
@@ -128,8 +218,8 @@ export struct CalendarPage {
       const inSemesterRange = date >= semStart && date <= semEnd;
       const validWeek = weekDiff > 0;
 
-      // 判断当前日期属于前半学期还是后半学期
-      const isDateInFirstHalf = weekDiff <= sem.firstHalfWeeks;
+      // 判断当前日期属于哪个半学期（每半学期8周）
+      const isDateInFirstHalf = weekDiff <= sem.halfSemesterWeeks;
 
       // 课程（需同时满足学期范围、有效周次、半学期匹配）
       if (inSemesterRange && validWeek) {
@@ -137,10 +227,9 @@ export struct CalendarPage {
           // 收集该课程当天所有匹配的 timeSlots
           const matchedSlots: CourseTimeSlot[] = [];
           for (const slot of (course.timeSlots ?? [])) {
-            // 半学期过滤（只过滤当 isFirstHalf 为 boolean 时）
-            if (typeof slot.isFirstHalf === 'boolean' && slot.isFirstHalf !== isDateInFirstHalf) {
-              continue;
-            }
+            // 半学期过滤：first=前半(秋/春), second=后半(冬/夏)
+            if (slot.halfType === 'first' && !isDateInFirstHalf) continue;
+            if (slot.halfType === 'second' && isDateInFirstHalf) continue;
             const weeks = Array.isArray(slot.weeks) ? slot.weeks : [];
             if (weeks.includes(weekDiff) && slot.weekDay === weekday) {
               matchedSlots.push(slot);
@@ -194,14 +283,16 @@ export struct CalendarPage {
       }
 
       // 考试（不受学期日期限制，只匹配日期；安全转换日期）
-      for (const exam of sem.exams) {
+      const examList: Exam[] = sem.exams ?? [];
+      for (const exam of examList) {
         const examStart = this.safeDate(exam.startTime);
+        const examEnd = this.safeDate(exam.endTime);
         if (this.isSameDay(examStart, date)) {
           periods.push(new Period(
-            `exam_${exam.uid}`,
-            `${exam.courseName} 考试`,
-            examStart, this.safeDate(exam.endTime),
-            PeriodType.TEST, exam.location, exam.uid
+            `exam_${exam.uid ?? 'unknown'}`,
+            `${exam.courseName ?? '未知课程'} 考试`,
+            examStart, examEnd,
+            PeriodType.TEST, exam.location ?? '', exam.uid ?? ''
           ));
         }
       }
@@ -209,15 +300,19 @@ export struct CalendarPage {
 
     // 合并 flowList 中的用户自定义任务（排除已由 semesters 生成的课程/考试，避免重复）
     const flowEvents = this.flowList.filter(p => {
-      const d = p.startTime;
-      return p.type === PeriodType.USER &&
-        d.getFullYear() === date.getFullYear() &&
+      if (p.type !== PeriodType.USER) return false;
+      const d = this.safeDate(p.startTime);
+      return d.getFullYear() === date.getFullYear() &&
         d.getMonth() === date.getMonth() &&
         d.getDate() === date.getDate();
     });
     periods.push(...flowEvents);
 
-    return periods.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+    return periods.sort((a, b) => {
+      const at = isNaN(a.startTime.getTime()) ? 0 : a.startTime.getTime();
+      const bt = isNaN(b.startTime.getTime()) ? 0 : b.startTime.getTime();
+      return at - bt;
+    });
   }
 
   /** 获取某天的前 N 个事件，用于日历标记 */
@@ -324,7 +419,9 @@ export struct CalendarPage {
     for (const course of semester.courses) {
       const courseColor = colorFromUid(course.uid);
       for (const slot of course.timeSlots) {
-        if (slot.isFirstHalf !== this.isFirstHalf) continue;
+        // 半学期过滤：first=前半(秋/春), second=后半(冬/夏)
+        if (slot.halfType === 'first' && !this.isFirstHalf) continue;
+        if (slot.halfType === 'second' && this.isFirstHalf) continue;
         if (week > 0 && !slot.weeks.includes(week)) continue;
         const item: ScheduleCourseItem = {
           name: course.shortName || course.name.slice(0, 6),
@@ -408,6 +505,12 @@ export struct CalendarPage {
     .padding({ left: 8, right: 8 })
   }
 
+  /** 计算月视图需要多少行（5行或6行） */
+  private getMonthRowTemplate(): string {
+    const rowCount = this.getMonthCells().length / 7;
+    return Array(rowCount).fill('1fr').join(' ');
+  }
+
   @Builder
   MonthGrid() {
     Grid() {
@@ -418,6 +521,7 @@ export struct CalendarPage {
       }, (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`)
     }
     .columnsTemplate('1fr 1fr 1fr 1fr 1fr 1fr 1fr')
+    .rowsTemplate(this.getMonthRowTemplate())
     .columnsGap(0)
     .rowsGap(2)
     .padding({ left: 8, right: 8 })
@@ -436,12 +540,17 @@ export struct CalendarPage {
 
   @Builder
   DayCell(date: Date) {
+    this.DayCellForMonth(date, this.focusedMonth, true)
+  }
+
+  @Builder
+  DayCellForMonth(date: Date, targetMonth: Date, grayOutOfMonth: boolean) {
     Column({ space: 2 }) {
       Text(date.getDate().toString())
         .fontSize(15)
         .fontColor(
           this.isSameDay(date, this.selectedDay) ? Color.White :
-            !this.isCurrentMonth(date) ? $r('app.color.text_tertiary') :
+            (grayOutOfMonth && !this.isSameMonth(date, targetMonth)) ? $r('app.color.text_tertiary') :
               $r('app.color.text_primary')
         )
         .width(36)
@@ -492,10 +601,38 @@ export struct CalendarPage {
     .padding({ top: 4, bottom: 4 })
     .onClick(() => {
       this.selectedDay = date;
-      if (!this.isCurrentMonth(date)) {
-        this.focusedMonth = date;
+      if (!this.isSameMonth(date, this.focusedMonth)) {
+        this.focusedMonth = new Date(date.getFullYear(), date.getMonth(), 1);
       }
     })
+  }
+
+  @Builder
+  MonthGridForMonth(month: Date) {
+    Grid() {
+      ForEach(this.getMonthCellsForMonth(month), (date: Date) => {
+        GridItem() {
+          this.DayCellForMonth(date, month, true)
+        }
+      }, (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`)
+    }
+    .columnsTemplate('1fr 1fr 1fr 1fr 1fr 1fr 1fr')
+    .rowsTemplate(this.getMonthRowTemplateForMonth(month))
+    .columnsGap(0)
+    .rowsGap(2)
+    .padding({ left: 8, right: 8 })
+    .height(this.getMonthGridHeightForMonth(month))
+  }
+
+  @Builder
+  WeekRowForWeek(monday: Date) {
+    Row() {
+      ForEach(this.getWeekCellsForWeek(monday), (date: Date) => {
+        this.DayCellForMonth(date, monday, false)
+      }, (date: Date) => `week-${date.getDate()}`)
+    }
+    .width('100%')
+    .padding({ left: 8, right: 8 })
   }
 
   /** 日程卡片 - 与 ScholarPage CourseListItem 风格保持一致 */
@@ -556,7 +693,7 @@ export struct CalendarPage {
   ScheduleGrid() {
     Column() {
       Row({ space: 8 }) {
-        Text('前半学期')
+        Text(this.getHalfSemesterLabels()[0])
           .fontSize(13)
           .fontColor(this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
           .fontWeight(this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
@@ -565,7 +702,7 @@ export struct CalendarPage {
           .backgroundColor(this.isFirstHalf ? $r('app.color.selected_day_bg') : Color.Transparent)
           .onClick(() => { this.isFirstHalf = true; })
 
-        Text('后半学期')
+        Text(this.getHalfSemesterLabels()[1])
           .fontSize(13)
           .fontColor(!this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
           .fontWeight(!this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
@@ -732,37 +869,79 @@ export struct CalendarPage {
         this.ScheduleGrid()
       } else {
         // 日历视图
-        Column() {
-          // 日历格子区域（可左右滑动切换月份/周）
-          Stack() {
-            Column({ space: 0 }) {
-              this.WeekDayHeader()
+        Column({ space: 0 }) {
+          this.WeekDayHeader()
 
+          // 日历格子区域（Swiper左右滑动切换月份/周）
+          Swiper() {
+            // 上上月
+            Column({ space: 0 }) {
               if (this.calendarFormat === 'month') {
-                this.MonthGrid()
+                this.MonthGridForMonth(this.getSwiperMonth(0))
               } else {
-                this.WeekRow()
+                this.WeekRowForWeek(this.getSwiperWeekMonday(0))
               }
             }
+            .width('100%')
+
+            // 上月
+            Column({ space: 0 }) {
+              if (this.calendarFormat === 'month') {
+                this.MonthGridForMonth(this.getSwiperMonth(1))
+              } else {
+                this.WeekRowForWeek(this.getSwiperWeekMonday(1))
+              }
+            }
+            .width('100%')
+
+            // 当前月
+            Column({ space: 0 }) {
+              if (this.calendarFormat === 'month') {
+                this.MonthGridForMonth(this.getSwiperMonth(2))
+              } else {
+                this.WeekRowForWeek(this.getSwiperWeekMonday(2))
+              }
+            }
+            .width('100%')
+
+            // 下月
+            Column({ space: 0 }) {
+              if (this.calendarFormat === 'month') {
+                this.MonthGridForMonth(this.getSwiperMonth(3))
+              } else {
+                this.WeekRowForWeek(this.getSwiperWeekMonday(3))
+              }
+            }
+            .width('100%')
+
+            // 下下月
+            Column({ space: 0 }) {
+              if (this.calendarFormat === 'month') {
+                this.MonthGridForMonth(this.getSwiperMonth(4))
+              } else {
+                this.WeekRowForWeek(this.getSwiperWeekMonday(4))
+              }
+            }
+            .width('100%')
           }
-          .gesture(
-            PanGesture({ direction: PanDirection.Horizontal })
-              .onActionEnd((event: GestureEvent) => {
-                if (event.offsetX > 60) {
-                  if (this.calendarFormat === 'month') {
-                    this.prevMonth();
-                  } else {
-                    this.prevWeek();
-                  }
-                } else if (event.offsetX < -60) {
-                  if (this.calendarFormat === 'month') {
-                    this.nextMonth();
-                  } else {
-                    this.nextWeek();
-                  }
-                }
-              })
-          )
+          .index(this.swiperIndex)
+          .duration(this.swiperDuration)
+          .loop(false)
+          .indicator(false)
+          .onAnimationEnd((index: number) => {
+            if (this.isSwiperResetting || index === 2) return;
+            this.isSwiperResetting = true;
+            const offset = index - 2;
+            if (this.calendarFormat === 'month') {
+              this.focusedMonth = new Date(this.focusedMonth.getFullYear(), this.focusedMonth.getMonth() + offset, 1);
+            } else {
+              this.selectedDay = new Date(this.selectedDay.getTime() + offset * 7 * 86400000);
+            }
+            setTimeout(() => {
+              this.swiperIndex = 2;
+              this.isSwiperResetting = false;
+            }, 50);
+          })
 
           Divider().strokeWidth(0.5).color($r('app.color.separator')).margin({ top: 8, bottom: 4 })
 
@@ -810,6 +989,7 @@ export struct CalendarPage {
           .edgeEffect(EdgeEffect.Spring)
           .padding({ left: 16, right: 16, top: 8 })
         }
+        .width('100%')
         .layoutWeight(1)
       }
     }

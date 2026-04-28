@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "Bash(which npx:*)",
+      "Bash(git diff:*)",
+      "WebFetch(context7.com)"
+    ]
+  }
+}

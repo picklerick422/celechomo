@@ -40,16 +40,16 @@ export class CourseTimeSlot {
   endPeriod: number = 2;     // 第几节结束
   location: string = '';
   weeks: number[] = [];      // 哪些周上课
-  isFirstHalf: boolean = true; // 前半/后半学期
+  halfType: 'first' | 'second' | 'full' = 'full'; // 所属半学期：first=前半(秋/春), second=后半(冬/夏), full=全学期
 
   constructor(weekDay: number, startPeriod: number, endPeriod: number,
-    location: string, weeks: number[], isFirstHalf: boolean = true) {
+    location: string, weeks: number[], halfType: 'first' | 'second' | 'full' = 'full') {
     this.weekDay = weekDay;
     this.startPeriod = startPeriod;
     this.endPeriod = endPeriod;
     this.location = location;
     this.weeks = weeks;
-    this.isFirstHalf = isFirstHalf;
+    this.halfType = halfType;
   }
 }
 
@@ -105,13 +105,22 @@ export class Course {
     // 解析 timeSlots（持久化后恢复需要）
     const slots = (obj['timeSlots'] as Record<string, string | number | boolean | number[]>[]) ?? [];
     c.timeSlots = slots.map(s => {
+      // 兼容性处理：旧数据使用 isFirstHalf(boolean)，新数据使用 halfType
+      let halfType: 'first' | 'second' | 'full' = 'full';
+      const newHalfType = s['halfType'] as string | undefined;
+      const oldIsFirstHalf = s['isFirstHalf'] as boolean | undefined;
+      if (newHalfType === 'first' || newHalfType === 'second' || newHalfType === 'full') {
+        halfType = newHalfType;
+      } else if (oldIsFirstHalf !== undefined) {
+        halfType = oldIsFirstHalf === true ? 'first' : 'second';
+      }
       const slot = new CourseTimeSlot(
         (s['weekDay'] as number) ?? 1,
         (s['startPeriod'] as number) ?? 1,
         (s['endPeriod'] as number) ?? 2,
         (s['location'] as string) ?? '',
         (s['weeks'] as number[]) ?? [],
-        (s['isFirstHalf'] as boolean) ?? true
+        halfType
       );
       return slot;
     });

@@ -39,6 +39,7 @@ interface GradesResponse {
 interface ExamsResponse {
   items?: Array<Record<string, Object>>;
   rows?: Array<Record<string, Object>>;
+  totalPage?: number;
 }
 
 interface TodosResponse {
@@ -731,6 +732,31 @@ export async function fetchSemesters(): Promise<FetchResult<Semester[]>> {
           const semesters = parseSemestersFromJson(raw);
           if (semesters.length > 0) {
             console.info(`[NetworkService] Got ${semesters.length} semesters from API`);
+            // 尝试从课表页 HTML 补充当前学期的准确起止日期
+            try {
+              const htmlResp = await httpGet(
+                `${JW_BASE}/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default`,
+                undefined, undefined, 5000);
+              if (htmlResp.responseCode === 200) {
+                const html = htmlResp.result as string;
+                const kssjMatch = html.match(/kssj["']?\s*[:=]\s*["']?(\d{4}-\d{2}-\d{2})["']?/);
+                const jssjMatch = html.match(/jssj["']?\s*[:=]\s*["']?(\d{4}-\d{2}-\d{2})["']?/);
+                const xnmMatch = html.match(/xnm["']?\s*[:=]\s*["']?(\d{4}-\d{4})["']?/);
+                const xqmMatch = html.match(/xqm["']?\s*[:=]\s*["']?(3|12)["']?/);
+                if (kssjMatch && xnmMatch && xqmMatch) {
+                  const termNum = xqmMatch[1] === '3' ? 1 : 2;
+                  const exactId = `${xnmMatch[1]}-${termNum}`;
+                  const exactSem = semesters.find(s => s.id === exactId);
+                  if (exactSem) {
+                    exactSem.startDate = new Date(kssjMatch[1]);
+                    if (jssjMatch) exactSem.endDate = new Date(jssjMatch[1]);
+                    console.info(`[NetworkService] Enriched exact dates for ${exactId}: ${kssjMatch[1]} ~ ${jssjMatch?.[1] ?? '?'}`);
+                  }
+                }
+              }
+            } catch (e) {
+              // 补充日期失败不影响主流程
+            }
             return { success: true, data: semesters, message: '获取成功' };
           }
         }
@@ -867,34 +893,93 @@ export async function fetchCourseSchedule(semesterId: string, timeoutMs?: number
   return { success: false, message: '获取课表失败' };
 }
 
-export async function fetchExams(semesterId: string, timeoutMs?: number): Promise<FetchResult<Exam[]>> {
+export async function fetchExams(semesterId: string, timeoutMs?: number, semesterStart?: Date, semesterEnd?: Date): Promise<FetchResult<Exam[]>> {
   const maxRetries = timeoutMs !== undefined && timeoutMs <= 10000 ? 0 : 2;
+  const studentId = getStudentId();
+
+  if (studentId.length === 0) {
+    console.warn('[NetworkService] fetchExams: studentId is empty, cannot build exam URL');
+    return { success: false, message: '未获取到学号，请先登录' };
+  }
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const yearTerm = parseSemesterId(semesterId);
-      const year = yearTerm[0];
-      const term = yearTerm[1];
-      const body = `xnm=${year}&xqm=${term}&_search=false&nd=${Date.now()}&queryModel.showCount=5000&queryModel.currentPage=1&queryModel.sortName=&queryModel.sortOrder=asc`;
-      console.info(`[NetworkService] Fetching exams, attempt ${attempt + 1}, xnm=${year}, xqm=${term}`);
+      // 考试接口不需要 xnm/xqm，返回全部历史考试，需客户端按学期过滤
+      const baseBody = `_search=false&nd=${Date.now()}&queryModel.sortName=xkkh&queryModel.sortOrder=asc&time=0`;
+      console.info(`[NetworkService] Fetching exams, attempt ${attempt + 1}, semester=${semesterId}, studentId=${studentId}`);
 
-      const resp = await httpPost(
-        `${JW_BASE}/xskscx/kscx_cxXsgrksIndex.html?doType=query&queryModel.showCount=5000`, body,
+      // 第一次请求：获取第1页并确定总页数
+      const firstBody = `${baseBody}&queryModel.showCount=5000&queryModel.currentPage=1`;
+      const firstResp = await httpPost(
+        `${JW_BASE}/xskscx/kscx_cxXsgrksIndex.html?doType=query&gnmkdm=N509070&su=${encodeURIComponent(studentId)}`,
+        firstBody,
         'application/x-www-form-urlencoded', {
           'X-Requested-With': 'XMLHttpRequest',
-          'Referer': `${JW_BASE}/xskscx/kscx_cxXsgrksIndex.html`
+          'Referer': `${JW_BASE}/xskscx/kscx_cxXsgrksIndex.html?gnmkdm=N509070&layout=default`
         }, undefined, timeoutMs);
 
-      if (resp.responseCode !== 200) {
-        return { success: false, message: `获取考试失败 (${resp.responseCode})` };
+      if (firstResp.responseCode !== 200) {
+        return { success: false, message: `获取考试失败 (${firstResp.responseCode})` };
       }
 
-      const raw = resp.result as string;
-      if (raw.trimStart().startsWith('<')) {
-        return { success: false, message: '考试接口返回异常' };
+      const firstRaw = firstResp.result as string;
+      console.info(`[NetworkService] Exams response prefix: ${firstRaw.trimStart().substring(0, 80)}`);
+
+      if (firstRaw.trimStart().startsWith('<')) {
+        console.warn('[NetworkService] Exam primary returned HTML, trying fallback');
+        const fallbackBody = `${baseBody}&queryModel.showCount=5000&queryModel.currentPage=1`;
+        const fallbackResp = await httpPost(
+          `${JW_BASE}/xskscx/kscx_cxXsgrks.html?doType=query&gnmkdm=N509070&su=${encodeURIComponent(studentId)}`,
+          fallbackBody,
+          'application/x-www-form-urlencoded', {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': `${JW_BASE}/xskscx/kscx_cxXsgrks.html?gnmkdm=N509070&layout=default`
+          }, undefined, timeoutMs);
+
+        if (fallbackResp.responseCode === 200) {
+          const fallbackRaw = fallbackResp.result as string;
+          if (!fallbackRaw.trimStart().startsWith('<')) {
+            const exams = parseExamsFromJson(fallbackRaw, semesterId, semesterStart, semesterEnd);
+            return { success: true, data: exams, message: '获取成功' };
+          }
+        }
+        return { success: false, message: '考试接口返回异常，可能需要重新登录' };
       }
 
-      const exams = parseExamsFromJson(raw, semesterId);
+      // 解析第1页并检查是否需要分页
+      let allItems: Record<string, string>[] = [];
+      const firstData = JSON.parse(firstRaw) as ExamsResponse;
+      const firstItems = (firstData.items ?? firstData.rows ?? []) as Record<string, string>[];
+      allItems.push(...firstItems);
+
+      const totalPage = (firstData.totalPage as number) ?? 1;
+      console.info(`[NetworkService] Exams totalPage=${totalPage}, firstPageItems=${firstItems.length}`);
+
+      // 如果有多页，继续获取
+      if (totalPage > 1) {
+        for (let page = 2; page <= totalPage; page++) {
+          const pageBody = `${baseBody}&queryModel.showCount=5000&queryModel.currentPage=${page}`;
+          const pageResp = await httpPost(
+            `${JW_BASE}/xskscx/kscx_cxXsgrksIndex.html?doType=query&gnmkdm=N509070&su=${encodeURIComponent(studentId)}`,
+            pageBody,
+            'application/x-www-form-urlencoded', {
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': `${JW_BASE}/xskscx/kscx_cxXsgrksIndex.html?gnmkdm=N509070&layout=default`
+            }, undefined, timeoutMs);
+          if (pageResp.responseCode === 200) {
+            const pageRaw = pageResp.result as string;
+            if (!pageRaw.trimStart().startsWith('<')) {
+              const pageData = JSON.parse(pageRaw) as ExamsResponse;
+              const pageItems = (pageData.items ?? pageData.rows ?? []) as Record<string, string>[];
+              allItems.push(...pageItems);
+            }
+          }
+        }
+      }
+
+      // 构造一个包含所有 items 的伪响应对象进行统一解析
+      const mergedJson = JSON.stringify({ items: allItems });
+      const exams = parseExamsFromJson(mergedJson, semesterId, semesterStart, semesterEnd);
       return { success: true, data: exams, message: '获取成功' };
     } catch (err) {
       const errorMsg = (err as Error).message;
@@ -1048,6 +1133,8 @@ interface SemesterApiItem {
   xnm?: string;   // 学年，如 "2025-2026"
   xqm?: string;   // 学期代码，"3"=第一学期，"12"=第二学期
   xnmc?: string;  // 学期名称，如 "2025-2026学年第一学期"
+  kssj?: string;  // 开始时间，如 "2026-02-23"
+  jssj?: string;  // 结束时间，如 "2026-07-03"
 }
 
 interface SemesterApiResponse {
@@ -1076,9 +1163,19 @@ function parseSemestersFromJson(json: string): Semester[] {
       const s = new Semester();
       s.id = `${year}-${termNum}`;
       s.name = name;
-      // 估算学期起止日期（精确日期从系统获取，此处估算）
-      s.startDate = new Date(termNum === 1 ? `${yearStart}-09-01` : `${yearStart + 1}-02-15`);
-      s.endDate = new Date(termNum === 1 ? `${yearStart + 1}-01-31` : `${yearStart + 1}-07-31`);
+      // 优先使用 API 返回的准确起止日期（kssj/jssj）
+      const apiStart = item.kssj as string ?? '';
+      const apiEnd = item.jssj as string ?? '';
+      if (apiStart.length > 0 && !isNaN(new Date(apiStart).getTime())) {
+        s.startDate = new Date(apiStart);
+      } else {
+        s.startDate = new Date(termNum === 1 ? `${yearStart}-09-01` : `${yearStart + 1}-02-17`);
+      }
+      if (apiEnd.length > 0 && !isNaN(new Date(apiEnd).getTime())) {
+        s.endDate = new Date(apiEnd);
+      } else {
+        s.endDate = new Date(termNum === 1 ? `${yearStart + 1}-01-20` : `${yearStart + 1}-07-05`);
+      }
       semesters.push(s);
     }
 
@@ -1110,20 +1207,24 @@ function generateSemestersByDate(): Semester[] {
   const semesters: Semester[] = [];
 
   for (let sy = freshmanYearStart; sy <= currentAcademicYearStart; sy++) {
-    // 秋季学期（第一学期）
+    // 秋季学期（第一学期，约16周：秋8周+冬8周）
     const fallSem = new Semester();
     fallSem.id = `${sy}-${sy + 1}-1`;
     fallSem.name = `${String(sy).substring(2)}-${String(sy + 1).substring(2)}秋冬`;
     fallSem.startDate = new Date(`${sy}-09-01`);
     fallSem.endDate = new Date(`${sy + 1}-01-31`);
+    fallSem.totalWeeks = 16;
+    fallSem.halfSemesterWeeks = 8;
     semesters.push(fallSem);
 
-    // 春季学期（第二学期）
+    // 春季学期（第二学期，约16周：春8周+夏8周）
     const springSem = new Semester();
     springSem.id = `${sy}-${sy + 1}-2`;
     springSem.name = `${String(sy).substring(2)}-${String(sy + 1).substring(2)}春夏`;
     springSem.startDate = new Date(`${sy + 1}-02-15`);
     springSem.endDate = new Date(`${sy + 1}-07-31`);
+    springSem.totalWeeks = 16;
+    springSem.halfSemesterWeeks = 8;
     // 只添加当前学年之前（含当前学年春季，如果已到春季的话）
     const springYear = sy + 1;
     const isCurrentOrPastSpring = springYear < currentYear ||
@@ -1147,6 +1248,25 @@ function parseSemestersFromHtml(html: string): Semester[] {
   //
   // 注意：部分 ZJU 版本的正方系统通过 JS 动态加载下拉选项，
   // 静态 HTML 中 <select> 内容为空，需要从 JS 变量中提取。
+
+  // ── 尝试从 HTML 的 JS 变量中提取当前学期的准确起止日期 ──
+  let exactStartDate: Date | null = null;
+  let exactEndDate: Date | null = null;
+  let exactSemesterId: string = '';
+  const kssjMatch = html.match(/kssj["']?\s*[:=]\s*["']?(\d{4}-\d{2}-\d{2})["']?/);
+  const jssjMatch = html.match(/jssj["']?\s*[:=]\s*["']?(\d{4}-\d{2}-\d{2})["']?/);
+  const xnmMatch = html.match(/xnm["']?\s*[:=]\s*["']?(\d{4}-\d{4})["']?/);
+  const xqmMatch = html.match(/xqm["']?\s*[:=]\s*["']?(3|12)["']?/);
+  if (kssjMatch) {
+    exactStartDate = new Date(kssjMatch[1]);
+  }
+  if (jssjMatch) {
+    exactEndDate = new Date(jssjMatch[1]);
+  }
+  if (xnmMatch && xqmMatch) {
+    const termNum = xqmMatch[1] === '3' ? 1 : 2;
+    exactSemesterId = `${xnmMatch[1]}-${termNum}`;
+  }
 
   // ── 尝试方案 1: 标准 name= 属性匹配 ──
   let xnmBlock = html.match(/<select[^>]*name=["']?xnm["']?[^>]*>([\s\S]*?)<\/select>/i);
@@ -1206,8 +1326,10 @@ function parseSemestersFromHtml(html: string): Semester[] {
       s.name = label.length > 0 ? label : value;
       const yearStart = parseInt(value.split('-')[0]);
       const isFirst = value.endsWith('-1');
-      s.startDate = new Date(isFirst ? `${yearStart}-09-10` : `${yearStart + 1}-02-28`);
-      s.endDate = new Date(isFirst ? `${yearStart + 1}-01-20` : `${yearStart + 1}-07-10`);
+      s.startDate = new Date(isFirst ? `${yearStart}-09-01` : `${yearStart + 1}-02-17`);
+      s.endDate = new Date(isFirst ? `${yearStart + 1}-01-20` : `${yearStart + 1}-07-05`);
+      s.totalWeeks = 16;
+      s.halfSemesterWeeks = 8;
       semesters.push(s);
     }
     if (semesters.length > 0) {
@@ -1234,8 +1356,19 @@ function parseSemestersFromHtml(html: string): Semester[] {
       s.id = `${year}-${termNum}`;
       const shortYear = year.replace(/(\d{2})(\d{2})-(\d{2})(\d{2})/, '$2-$4');
       s.name = `${shortYear}${isFirst ? '秋冬' : '春夏'}`;
-      s.startDate = new Date(isFirst ? `${yearStart}-09-10` : `${yearStart + 1}-02-28`);
-      s.endDate = new Date(isFirst ? `${yearStart + 1}-01-20` : `${yearStart + 1}-07-10`);
+      s.totalWeeks = 16;
+      s.halfSemesterWeeks = 8;
+      // 如果有从 HTML 提取的准确日期且匹配当前学期，使用准确日期
+      if (exactSemesterId === s.id && exactStartDate && !isNaN(exactStartDate.getTime())) {
+        s.startDate = exactStartDate;
+      } else {
+        s.startDate = new Date(isFirst ? `${yearStart}-09-10` : `${yearStart + 1}-02-28`);
+      }
+      if (exactSemesterId === s.id && exactEndDate && !isNaN(exactEndDate.getTime())) {
+        s.endDate = exactEndDate;
+      } else {
+        s.endDate = new Date(isFirst ? `${yearStart + 1}-01-20` : `${yearStart + 1}-07-10`);
+      }
       semesters.push(s);
     }
   }
@@ -1370,12 +1503,13 @@ interface CourseScheduleItem {
   xqj?: string;    // 星期几 (1-7)
   dsz?: string;    // 单双周 ('0'=单周, '1'=双周, '2'=均有)
   kcb?: string;    // 课程信息 HTML: "课程名<br>课程号<br>教师<br>地点zwf..."
-  xxq?: string;    // 学期半段 (含 "秋"/"冬"/"春"/"夏")
+  xxq?: string;    // 学期半段 (含 "秋"/"冬"/"春"/"夏"/"秋冬"/"春夏")
   djj?: string;    // 开始节次
   skcd?: string;   // 上课节数（时长）
   kch_id?: string; // 课程ID（备用）
   kcmc?: string;   // 课程名（备用）
   jxb_id?: string; // 教学班ID
+  zcd?: string;    // 上课周次描述，如 "1-8周" 或 "1-16周(单)"
 }
 
 interface CourseScheduleResponseWithId {
@@ -1472,30 +1606,72 @@ function parseCourseScheduleFromJson(json: string, semesterId: string): Course[]
       const duration = parseInt(item.skcd as string ?? '2');
       const endPeriod = startPeriod + duration - 1;
 
+      // 解析学期半段：秋/春=前半(first), 冬/夏=后半(second), 秋冬/春夏=全学期(full)
+      let halfType: 'first' | 'second' | 'full';
+      if (xxq.includes('秋冬') || xxq.includes('春夏')) {
+        halfType = 'full';
+      } else if (xxq.includes('秋') || xxq.includes('春')) {
+        halfType = 'first';
+      } else if (xxq.includes('冬') || xxq.includes('夏')) {
+        halfType = 'second';
+      } else {
+        // 无法判断时，默认全学期（由查询范围兜底）
+        halfType = 'full';
+      }
+
+      // 解析上课周次范围（zcd = 周次描述，如 "1-8周" 或 "1-16周(单)"）
+      const zcd = item.zcd as string ?? '';
+      let weekStart = 1;
+      let weekEnd = 16;
+      if (zcd.length > 0) {
+        // 匹配 "1-8周" "第1-8周" "1~8周" 等
+        const rangeMatch = zcd.match(/(\d+)[\-~～至](\d+)周?/);
+        if (rangeMatch) {
+          weekStart = parseInt(rangeMatch[1]);
+          weekEnd = parseInt(rangeMatch[2]);
+        } else {
+          // 匹配 "8周" "第8周"
+          const singleMatch = zcd.match(/(\d+)周?/);
+          if (singleMatch) {
+            weekStart = parseInt(singleMatch[1]);
+            weekEnd = weekStart;
+          }
+        }
+      } else {
+        // 没有 zcd 时，根据 halfType 推断默认范围（每半学期8周）
+        if (halfType === 'first') {
+          weekEnd = 8;
+        } else if (halfType === 'second') {
+          weekStart = 9;
+          weekEnd = 16;
+        }
+      }
+
       // 解析单双周：'0'=单周, '1'=双周, '2'(或其他)=均有
       const dsz = item.dsz as string ?? '2';
       const oddWeek = dsz !== '1';
       const evenWeek = dsz !== '0';
       const weeks: number[] = [];
-      for (let w = 1; w <= 20; w++) {
+      for (let w = weekStart; w <= weekEnd; w++) {
         if ((oddWeek && w % 2 === 1) || (evenWeek && w % 2 === 0)) {
           weeks.push(w);
         }
       }
 
-      // 解析学期半段（秋/春=前半, 冬/夏=后半, 秋冬/春夏=全学期）
-      const isFullSemester = xxq.includes('秋冬') || xxq.includes('春夏');
-      const isFirstHalf = !isFullSemester && (xxq.includes('秋') || xxq.includes('春'));
-      const isSecondHalf = !isFullSemester && (xxq.includes('冬') || xxq.includes('夏'));
-
       const targetCourse = courseMap.get(courseKey);
       if (targetCourse) {
-        // 全学期课程：生成两个 timeSlot（前半+后半）
-        if (isFullSemester) {
-          targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, true));
-          targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, false));
+        // 根据 halfType 和 weeks 实际范围创建 timeSlot
+        if (halfType === 'full') {
+          const firstHalfWeeks = weeks.filter(w => w <= 8);
+          const secondHalfWeeks = weeks.filter(w => w >= 9);
+          if (firstHalfWeeks.length > 0) {
+            targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, firstHalfWeeks, 'first'));
+          }
+          if (secondHalfWeeks.length > 0) {
+            targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, secondHalfWeeks, 'second'));
+          }
         } else {
-          targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, isFirstHalf));
+          targetCourse.timeSlots.push(new CourseTimeSlot(weekDay, startPeriod, endPeriod, location, weeks, halfType));
         }
       } else {
         console.warn(`[NetworkService] courseKey not found in map: ${courseKey}`);
@@ -1507,35 +1683,140 @@ function parseCourseScheduleFromJson(json: string, semesterId: string): Course[]
   }
 }
 
+/**
+ * 解析正方教务系统中文日期格式：2024年01月09日(08:00-10:00)
+ * 返回 [startTime, endTime]，解析失败返回 [null, null]
+ */
+function parseChineseExamDate(dateStr: string): [Date | null, Date | null] {
+  if (!dateStr || dateStr.length === 0) {
+    return [null, null];
+  }
+  const match = dateStr.match(/^(\d{4})年(\d{2})月(\d{2})日\((\d{2}):(\d{2})-(\d{2}):(\d{2})\)$/);
+  if (!match) {
+    console.warn(`[NetworkService] Unrecognized exam date format: ${dateStr}`);
+    return [null, null];
+  }
+  const year = match[1];
+  const month = match[2];
+  const day = match[3];
+  const startHour = match[4];
+  const startMin = match[5];
+  const endHour = match[6];
+  const endMin = match[7];
+  const startTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day),
+    parseInt(startHour), parseInt(startMin), 0);
+  const endTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day),
+    parseInt(endHour), parseInt(endMin), 0);
+  return [startTime, endTime];
+}
+
+/**
+ * 从选课课号 xkkh 中提取学期ID，如 (2023-2024-1)-... -> 2023-2024-1
+ */
+function extractSemesterFromXkkh(xkkh: string): string | null {
+  if (!xkkh || xkkh.length === 0) return null;
+  const match = xkkh.match(/^\((\d{4}-\d{4}-\d+)\)/);
+  return match ? match[1] : null;
+}
+
 interface ExamItem {
   kcmc?: string;   // 课程名称
   kch?: string;    // 课程号
-  kssj?: string;   // 考试开始时间
-  jssj?: string;   // 考试结束时间
+  kssj?: string;   // 考试开始时间（中文格式）
+  jssj?: string;   // 考试结束时间（通常不存在，时间含在kssj中）
   jsmc?: string;   // 考场（地点）
   zwxh?: string;   // 座位号
   xnm?: string;    // 学年
   xqm?: string;    // 学期
+  xkkh?: string;   // 选课课号，含学期信息如 (2023-2024-1)-...
+  xxq?: string;    // 修读学期：秋/秋冬/春/春夏/夏
+  qzkssj?: string; // 期中考试开始时间
+  qzjsmc?: string; // 期中考场
+  qzzwxh?: string; // 期中座位号
+  bz?: string;     // 备注，如"弃修无需考试"
 }
 
-function parseExamsFromJson(json: string, semesterId: string): Exam[] {
+function parseExamsFromJson(json: string, semesterId: string, semesterStart?: Date, semesterEnd?: Date): Exam[] {
   try {
     const data = JSON.parse(json) as ExamsResponse;
     const items = data.items ?? data.rows ?? [];
-    return items.map(rawItem => {
+
+    // 日期范围过滤参数（宽限±30天）
+    const rangeStart = semesterStart ? new Date(semesterStart.getTime() - 30 * 86400000) : null;
+    const rangeEnd = semesterEnd ? new Date(semesterEnd.getTime() + 30 * 86400000) : null;
+
+    const exams: Exam[] = [];
+    let filteredCount = 0;
+    let skippedCount = 0;
+
+    for (const rawItem of items) {
       const item = rawItem as ExamItem;
-      const e = new Exam();
-      e.uid = `exam_${item.kch ?? ''}_${semesterId}`;
-      e.courseName = item.kcmc as string ?? '';
-      e.startTime = new Date(item.kssj as string ?? '');
-      e.endTime = new Date(item.jssj as string ?? '');
-      e.location = item.jsmc as string ?? '';
-      e.seatNo = item.zwxh as string ?? '';
-      e.semester = semesterId;
-      e.type = e.courseName.includes('期中') ? 'midterm' : 'final';
-      return e;
-    });
-  } catch {
+
+      // 策略1: 优先从 xkkh 提取学期ID进行过滤（最可靠）
+      const itemSemester = extractSemesterFromXkkh(item.xkkh ?? '');
+      if (itemSemester) {
+        if (itemSemester !== semesterId) {
+          filteredCount++;
+          continue;
+        }
+      }
+      // 策略2: xkkh 不可用但日期可用时，按日期范围过滤
+      else if (item.kssj && rangeStart && rangeEnd) {
+        const examStartResult = parseChineseExamDate(item.kssj);
+        const examStart = examStartResult[0];
+        if (examStart && (examStart < rangeStart || examStart > rangeEnd)) {
+          filteredCount++;
+          continue;
+        }
+      }
+
+      // 解析期末考试时间
+      const finalResult = parseChineseExamDate(item.kssj ?? '');
+      const finalStart = finalResult[0];
+      const finalEnd = finalResult[1];
+
+      // 如果有期末考试时间，生成期末 Exam
+      if (finalStart && finalEnd) {
+        const e = new Exam();
+        e.uid = `exam_${item.kch ?? ''}_${semesterId}_final`;
+        e.courseName = item.kcmc as string ?? '';
+        e.startTime = finalStart;
+        e.endTime = finalEnd;
+        e.location = item.jsmc as string ?? '';
+        e.seatNo = item.zwxh as string ?? '';
+        e.semester = semesterId;
+        e.type = 'final';
+        exams.push(e);
+      } else if (item.kssj) {
+        // 有kssj但解析失败，记录日志
+        console.warn(`[NetworkService] Failed to parse exam date for ${item.kcmc}: ${item.kssj}`);
+      } else {
+        // 没有考试时间（如未安排考试的课程），跳过
+        skippedCount++;
+      }
+
+      // 解析期中考试时间（如果存在）
+      const midResult = parseChineseExamDate(item.qzkssj ?? '');
+      const midStart = midResult[0];
+      const midEnd = midResult[1];
+      if (midStart && midEnd) {
+        const mid = new Exam();
+        mid.uid = `exam_${item.kch ?? ''}_${semesterId}_midterm`;
+        mid.courseName = `${item.kcmc as string ?? ''}`;
+        mid.startTime = midStart;
+        mid.endTime = midEnd;
+        mid.location = item.qzjsmc as string ?? '';
+        mid.seatNo = item.qzzwxh as string ?? '';
+        mid.semester = semesterId;
+        mid.type = 'midterm';
+        exams.push(mid);
+      }
+    }
+
+    console.info(`[NetworkService] Parsed ${exams.length} exams (${items.length} raw items) for ${semesterId}, filtered=${filteredCount}, skipped=${skippedCount}`);
+    return exams;
+  } catch (err) {
+    console.error(`[NetworkService] parseExamsFromJson error: ${(err as Error).message}`);
     return [];
   }
 }

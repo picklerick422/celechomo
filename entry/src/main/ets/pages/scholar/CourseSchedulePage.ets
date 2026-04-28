@@ -40,7 +40,9 @@ export struct CourseSchedulePage {
     for (const course of sem.courses) {
       const color = colorFromUid(course.uid);
       for (const slot of course.timeSlots) {
-        if (slot.isFirstHalf !== this.isFirstHalf) continue;
+        // 半学期过滤：first=前半(秋/春), second=后半(冬/夏)
+        if (slot.halfType === 'first' && !this.isFirstHalf) continue;
+        if (slot.halfType === 'second' && this.isFirstHalf) continue;
         const item: ScheduleCourseItemWithTeacher = {
           name: course.shortName || course.name.slice(0, 6),
           location: slot.location,
@@ -54,6 +56,14 @@ export struct CourseSchedulePage {
       }
     }
     return result;
+  }
+
+  /** 获取当前学期的半学期标签 */
+  private getHalfSemesterLabels(): [string, string] {
+    const sem = this.currentSemester;
+    if (!sem) return ['前半学期', '后半学期'];
+    if (sem.isSpring) return ['春学期', '夏学期'];
+    return ['秋学期', '冬学期'];
   }
 
   private formatPeriodTime(idx: number): string {
@@ -88,7 +98,7 @@ export struct CourseSchedulePage {
 
         // 前/后半切换
         Row({ space: 8 }) {
-          Text('前半学期')
+          Text(this.getHalfSemesterLabels()[0])
             .fontSize(14)
             .fontColor(this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
             .fontWeight(this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
@@ -97,7 +107,7 @@ export struct CourseSchedulePage {
             .backgroundColor(this.isFirstHalf ? $r('app.color.selected_day_bg') : Color.Transparent)
             .onClick(() => { this.isFirstHalf = true; })
 
-          Text('后半学期')
+          Text(this.getHalfSemesterLabels()[1])
             .fontSize(14)
             .fontColor(!this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
             .fontWeight(!this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
@@ -167,10 +177,26 @@ export struct CourseSchedulePage {
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
       const params = ctx.pathInfo.param as Record<string, string | boolean>;
-      this.semesterId = (params?.['semesterId'] as string) ?? '';
-      // 导航参数可能被序列化为字符串，需要同时处理 boolean 和 string 形式
-      const rawIsFirstHalf = params?.['isFirstHalf'];
-      this.isFirstHalf = rawIsFirstHalf === true || rawIsFirstHalf === 'true';
+
+      const courseUid = params?.['courseUid'] as string;
+      if (courseUid) {
+        // 通过 courseUid 反向查找所在学期和半学期
+        for (const sem of this.semesters) {
+          const course = sem.courses.find(c => c.uid === courseUid);
+          if (course) {
+            this.semesterId = sem.id;
+            const hasFirst = course.timeSlots.some(s => s.halfType === 'first' || s.halfType === 'full');
+            const hasSecond = course.timeSlots.some(s => s.halfType === 'second' || s.halfType === 'full');
+            this.isFirstHalf = hasFirst || !hasSecond;
+            break;
+          }
+        }
+      } else {
+        this.semesterId = (params?.['semesterId'] as string) ?? '';
+        // 导航参数可能被序列化为字符串，需要同时处理 boolean 和 string 形式
+        const rawIsFirstHalf = params?.['isFirstHalf'];
+        this.isFirstHalf = rawIsFirstHalf === true || rawIsFirstHalf === 'true';
+      }
     })
   }
 
