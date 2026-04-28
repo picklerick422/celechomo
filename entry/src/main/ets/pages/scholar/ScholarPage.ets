@@ -52,6 +52,10 @@ export struct ScholarPage {
   private storageService: StorageService | null = null;
   private updateLabelTimer: number = -1;
 
+  // 学期选择器（胶囊式分段控件）
+  @State semesterDragOffset: number = 0;
+  private readonly semesterCellWidth: number = 92;
+
   private get studentInfo(): StudentInfo | null {
     const str = this.studentInfoStr;
     if (str && str.length > 0) {
@@ -139,6 +143,37 @@ export struct ScholarPage {
     this._currentSemester = sems[idx] ?? null;
     this.updateSafeGpaInfo();
     console.info(`[ScholarPage] syncCurrentSemester: idx=${idx}, id=${this._currentSemester?.id ?? 'null'}, courses=${this._currentSemester?.courses?.length ?? 0}`);
+  }
+
+  /** 学期选择指示器在容器内的左偏移（含 2px 内边距）。在拖拽过程中跟手位移。 */
+  private indicatorOffsetX(): number {
+    const count = (this.semesters ?? []).length;
+    if (count <= 0) return 2;
+    const baseX = this.semesterIndex * this.semesterCellWidth + this.semesterDragOffset;
+    const maxX = (count - 1) * this.semesterCellWidth;
+    const clamped = Math.max(0, Math.min(maxX, baseX));
+    return clamped + 2;
+  }
+
+  /** 平滑吸附到指定学期序号。 */
+  private snapToSemester(idx: number): void {
+    const count = (this.semesters ?? []).length;
+    if (count <= 0) return;
+    const target = Math.max(0, Math.min(count - 1, idx));
+    const changed = target !== this.semesterIndex;
+    try {
+      this.getUIContext().animateTo({ duration: 240, curve: Curve.FastOutSlowIn }, () => {
+        this.semesterIndex = target;
+        this.semesterDragOffset = 0;
+      });
+    } catch {
+      this.semesterIndex = target;
+      this.semesterDragOffset = 0;
+    }
+    if (changed) {
+      this.syncCurrentSemester();
+      this.onSemesterChanged();
+    }
   }
 
   /** 时间上的当前学期（FlowPage 数据获取用）：包含当前日期或最接近的学期 */
@@ -720,24 +755,91 @@ export struct ScholarPage {
   @Builder
   SemesterSelector() {
     Scroll() {
-      Row({ space: 6 }) {
-        ForEach(this.semesters, (sem: Semester, idx: number) => {
-          Text(sem.name)
-            .fontSize(12)
-            .fontWeight(idx === this.semesterIndex ? FontWeight.Medium : FontWeight.Regular)
-            .fontColor(idx === this.semesterIndex ? Color.White : $r('app.color.text_secondary'))
-            .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-            .borderRadius(10)
-            .backgroundColor(idx === this.semesterIndex ?
-              $r('app.color.color_blue') : $r('app.color.tile_bg'))
-            .animation({ duration: 180, curve: Curve.EaseOut })
-            .onClick(() => {
-              this.semesterIndex = idx;
-              this.syncCurrentSemester();
-              this.onSemesterChanged();
+      Stack({ alignContent: Alignment.Start }) {
+        // 1. 底层胶囊背景（仅背景，不含文字）
+        Row()
+          .width(Math.max((this.semesters ?? []).length, 1) * this.semesterCellWidth)
+          .height(36)
+          .borderRadius(18)
+          .backgroundColor($r('app.color.tile_bg'))
+
+        // 2. 指示器：主题色小胶囊（仅背景，位于文字后面），可拖拽
+        if ((this.semesters ?? []).length > 0) {
+          Row()
+            .width(this.semesterCellWidth - 4)
+            .height(32)
+            .borderRadius(16)
+            .backgroundColor($r('app.color.color_blue'))
+            .shadow({
+              radius: 6,
+              color: '#33007AFF',
+              offsetX: 0,
+              offsetY: 2
             })
-        }, (sem: Semester) => sem.id)
+            .offset({ x: this.indicatorOffsetX(), y: 0 })
+            .gesture(
+              PanGesture({ direction: PanDirection.Horizontal, distance: 5 })
+                .onActionUpdate((event: GestureEvent) => {
+                  this.semesterDragOffset = event.offsetX;
+                })
+                .onActionEnd((event: GestureEvent) => {
+                  const rawX = this.semesterIndex * this.semesterCellWidth + this.semesterDragOffset;
+                  const target = Math.round(rawX / this.semesterCellWidth);
+                  this.snapToSemester(target);
+                })
+                .onActionCancel(() => {
+                  this.snapToSemester(this.semesterIndex);
+                })
+            )
+        }
+
+        // 3. 学期文字层（灰色，始终位于胶囊原位；点击切换、拖拽透传至指示器）
+        Row() {
+          ForEach(this.semesters, (sem: Semester, idx: number) => {
+            Text(sem.name)
+              .width(this.semesterCellWidth)
+              .height(36)
+              .textAlign(TextAlign.Center)
+              .fontSize(12)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_secondary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .onClick(() => this.snapToSemester(idx))
+              .hitTestBehavior(HitTestMode.Transparent)
+          }, (sem: Semester) => sem.id)
+        }
+        .height(36)
+        .hitTestBehavior(HitTestMode.Transparent)
+
+        // 4. 白色文字层（裁剪到指示器范围内，仅被胶囊覆盖的部分变白）
+        if ((this.semesters ?? []).length > 0) {
+          Row() {
+            Row() {
+              ForEach(this.semesters, (sem: Semester, idx: number) => {
+                Text(sem.name)
+                  .width(this.semesterCellWidth)
+                  .height(36)
+                  .textAlign(TextAlign.Center)
+                  .fontSize(12)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(Color.White)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }, (sem: Semester) => sem.id)
+            }
+            .height(36)
+            .offset({ x: -this.indicatorOffsetX(), y: 0 })
+          }
+          .width(this.semesterCellWidth - 4)
+          .height(32)
+          .borderRadius(16)
+          .clip(true)
+          .offset({ x: this.indicatorOffsetX(), y: 0 })
+          .hitTestBehavior(HitTestMode.None)
+        }
       }
+      .height(36)
       .padding({ left: 16, right: 16 })
     }
     .scrollable(ScrollDirection.Horizontal)
@@ -1036,6 +1138,8 @@ export struct ScholarPage {
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .onClick(() => {
       const navParam: CourseDetailNavParam = { courseUid: course.uid, semesterId: semesterId };
+      AppStorage.setOrCreate('detailCourseUid', course.uid);
+      AppStorage.setOrCreate('detailSemesterId', semesterId);
       this.navStack.pushPathByName('CourseDetail', navParam);
     })
   }

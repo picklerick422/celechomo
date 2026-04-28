@@ -179,6 +179,8 @@ export struct CourseListPage {
     .borderRadius(12)
     .onClick(() => {
       const navParam: CourseDetailNavParam = { courseUid: course.uid, semesterId: this.semesterId };
+      AppStorage.setOrCreate('detailCourseUid', course.uid);
+      AppStorage.setOrCreate('detailSemesterId', this.semesterId);
       this.pathStack?.pushPathByName('CourseDetail', navParam);
     })
   }
