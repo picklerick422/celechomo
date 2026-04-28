@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude mcp *)",
+      "WebFetch(domain:developer.huawei.com)",
+      "WebSearch",
+      "Bash(awk *)"
+    ]
+  }
+}

@@ -28,6 +28,8 @@
     { "name": "swipe_green", "value": "#34C759" },
     { "name": "swipe_red", "value": "#FF3B30" },
     { "name": "swipe_orange", "value": "#FF9500" },
-    { "name": "transparent", "value": "#00000000" }
+    { "name": "transparent", "value": "#00000000" },
+    { "name": "tile_bg", "value": "#05000000" },
+    { "name": "tile_border", "value": "#0F000000" }
   ]
 }

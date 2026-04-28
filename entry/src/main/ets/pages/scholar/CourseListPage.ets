@@ -5,6 +5,11 @@ import { Course } from '../../model/Course';
 import { colorFromUid } from '../../model/Period';
 import { AppKeys } from '../Index';
 
+interface CourseDetailNavParam {
+  courseUid: string;
+  semesterId: string;
+}
+
 @Component
 export struct CourseListPage {
   @StorageLink(AppKeys.SEMESTERS) semesters: Semester[] = [];
@@ -172,5 +177,9 @@ export struct CourseListPage {
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .backgroundColor($r('app.color.card_background'))
     .borderRadius(12)
+    .onClick(() => {
+      const navParam: CourseDetailNavParam = { courseUid: course.uid, semesterId: this.semesterId };
+      this.pathStack?.pushPathByName('CourseDetail', navParam);
+    })
   }
 }

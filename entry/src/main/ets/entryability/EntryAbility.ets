@@ -1,16 +1,22 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window, display } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { StorageService } from '../service/StorageService';
+import { AppKeys, ThemeMode } from '../pages/Index';
+import { applyThemeMode } from '../utils/ThemeUtil';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   private mainWindow: window.Window | null = null;
 
-  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+  async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void> {
     try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+      const storageService = new StorageService(this.context);
+      const mode = await storageService.loadThemeMode() as ThemeMode;
+      applyThemeMode(this.context, mode);
+      AppStorage.setOrCreate(AppKeys.THEME_MODE, mode);
     } catch (err) {
       const error = err as BusinessError;
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(error));
@@ -111,6 +117,10 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    this.syncDarkMode();
+  }
+
+  onConfigurationUpdate(newConfig: Configuration): void {
     this.syncDarkMode();
   }
 

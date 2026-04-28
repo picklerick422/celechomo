@@ -473,8 +473,8 @@ export struct TaskEditPage {
                       title: '删除任务',
                       message: `确定要删除"${summary}"吗？`,
                       buttons: [
-                        { text: '取消', color: '#000000' },
-                        { text: '删除', color: '#FF0000' }
+                        { text: '取消', color: $r('app.color.text_primary') },
+                        { text: '删除', color: $r('app.color.color_red') }
                       ]
                     }).then(async (result) => {
                       if (result.index === 1) {

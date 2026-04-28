@@ -27,6 +27,8 @@
     { "name": "today_bg", "value": "#3C636366" },
     { "name": "swipe_green", "value": "#30D158" },
     { "name": "swipe_red", "value": "#FF453A" },
-    { "name": "swipe_orange", "value": "#FF9F0A" }
+    { "name": "swipe_orange", "value": "#FF9F0A" },
+    { "name": "tile_bg", "value": "#14FFFFFF" },
+    { "name": "tile_border", "value": "#1FFFFFFF" }
   ]
 }

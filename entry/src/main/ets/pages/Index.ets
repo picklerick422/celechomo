@@ -14,6 +14,7 @@ import { ScholarPage } from './scholar/ScholarPage';
 import { OptionPage } from './option/OptionPage';
 import { TaskEditPage } from './task/TaskEditPage';
 import { GradeDetailPage } from './scholar/GradeDetailPage';
+import { CourseDetailPage } from './scholar/CourseDetailPage';
 import { CourseListPage } from './scholar/CourseListPage';
 import { CourseSchedulePage } from './scholar/CourseSchedulePage';
 import { ExamListPage } from './scholar/ExamListPage';
@@ -67,6 +68,8 @@ function pageMap(name: string, param: ESObject) {
     TaskEditPage()
   } else if (name === 'GradeDetail') {
     GradeDetailPage()
+  } else if (name === 'CourseDetail') {
+    CourseDetailPage()
   } else if (name === 'CourseList') {
     CourseListPage()
   } else if (name === 'CourseSchedule') {
@@ -174,7 +177,8 @@ struct Index {
       this.storageService.loadString('cookies', ''),
       this.storageService.loadString('student_info', ''),
       this.storageService.loadBoolean('isInitialFetchDone', false),
-      this.storageService.loadNumber('semester_index', 0)
+      this.storageService.loadNumber('semester_index', 0),
+      this.storageService.loadThemeMode()
     ]);
 
     const tasks = results[0];
@@ -191,6 +195,7 @@ struct Index {
     const studentInfoStr = results[11] as string;
     const isInitialFetchDone = results[12] as boolean;
     const semesterIndex = results[13] as number;
+    const themeMode = results[14] as string;
 
     AppStorage.set(AppKeys.TASKS, tasks);
     AppStorage.set(AppKeys.SEMESTERS, semesters);
@@ -206,6 +211,7 @@ struct Index {
     AppStorage.set(AppKeys.LAST_UPDATE, lastUpdate);
     AppStorage.set(AppKeys.IS_INITIAL_FETCH_DONE, isInitialFetchDone);
     AppStorage.set(AppKeys.CURRENT_SEMESTER_INDEX, semesterIndex);
+    AppStorage.set(AppKeys.THEME_MODE, themeMode);
     if (cookies.length > 0) setCookies(cookies);
     // 恢复学号到 NetworkService（避免重启后 savedStudentId 为空）
     if (username.length > 0 && username !== 'web_user') {
@@ -268,8 +274,8 @@ struct Index {
               title: '更新可用',
               message: `Celechron ${v} 已发布，建议更新以获得最新功能和修复。`,
               buttons: [
-                { text: '访问网站', color: '#000000' },
-                { text: '忽略', color: '#000000' }
+                { text: '访问网站', color: $r('app.color.text_primary') },
+                { text: '忽略', color: $r('app.color.text_primary') }
               ]
             }).catch(() => {
               // TODO: Implement error handling.

@@ -23,6 +23,11 @@ interface GradeDetailNavParam {
   semesterIndex: number;
 }
 
+interface CourseDetailNavParam {
+  courseUid: string;
+  semesterId: string;
+}
+
 @Component
 export struct ScholarPage {
   navStack: NavPathStack = new NavPathStack();
@@ -724,7 +729,7 @@ export struct ScholarPage {
             .padding({ left: 16, right: 16, top: 7, bottom: 7 })
             .borderRadius(10)
             .backgroundColor(idx === this.semesterIndex ?
-              $r('app.color.color_blue') : 'rgba(0,0,0,0.04)')
+              $r('app.color.color_blue') : $r('app.color.tile_bg'))
             .animation({ duration: 180, curve: Curve.EaseOut })
             .onClick(() => {
               this.semesterIndex = idx;
@@ -818,7 +823,7 @@ export struct ScholarPage {
                 ForEach(
                   this._currentSemester!.courses.filter((c: Course) => c.hasGrade),
                   (course: Course, index: number) => {
-                    this.CourseListItem(course)
+                    this.CourseListItem(course, this._currentSemester!.id)
                     if (index < this._currentSemester!.courses.filter((c: Course) => c.hasGrade).length - 1) {
                       Divider()
                         .strokeWidth(0.5)
@@ -918,7 +923,7 @@ export struct ScholarPage {
             if (this._currentSemester.courses.length > 0) {
               Column({ space: 0 }) {
                 ForEach(this._currentSemester.courses, (course: Course, index: number) => {
-                  this.CourseListItem(course)
+                  this.CourseListItem(course, this._currentSemester!.id)
                   if (index < this._currentSemester!.courses.length - 1) {
                     Divider()
                       .strokeWidth(0.5)
@@ -954,7 +959,7 @@ export struct ScholarPage {
   }
 
   @Builder
-  CourseListItem(course: Course) {
+  CourseListItem(course: Course, semesterId: string) {
     Row({ space: 12 }) {
       // 左侧圆形色块（课程首字）
       Column() {
@@ -1030,7 +1035,8 @@ export struct ScholarPage {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .onClick(() => {
-      this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
+      const navParam: CourseDetailNavParam = { courseUid: course.uid, semesterId: semesterId };
+      this.navStack.pushPathByName('CourseDetail', navParam);
     })
   }
 
@@ -1062,7 +1068,7 @@ export struct ScholarPage {
     }
     .layoutWeight(1)
     .padding({ top: 10, bottom: 10 })
-    .backgroundColor('rgba(0,0,0,0.02)')
+    .backgroundColor($r('app.color.tile_bg'))
     .borderRadius(10)
     .onClick(onTap)
   }
@@ -1087,7 +1093,7 @@ export struct ScholarPage {
     .layoutWeight(1)
     .padding(12)
     .borderRadius(12)
-    .backgroundColor('rgba(0,0,0,0.03)')
+    .backgroundColor($r('app.color.tile_bg'))
     .onClick(() => {
       this.navStack.pushPathByName('CourseSchedule', this.getCourseScheduleNavParam(sem, isFirst));
     })
@@ -1155,7 +1161,7 @@ export struct ScholarPage {
     .padding(12)
     .borderRadius(12)
     .backgroundColor($r('app.color.card_background'))
-    .border({ width: 0.5, color: 'rgba(0,0,0,0.06)' })
+    .border({ width: 0.5, color: $r('app.color.tile_border') })
     .alignItems(HorizontalAlign.Start)
     .justifyContent(FlexAlign.SpaceBetween)
   }

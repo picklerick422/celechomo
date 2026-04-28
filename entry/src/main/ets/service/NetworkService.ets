@@ -828,6 +828,10 @@ export async function fetchGrades(semesterId: string, timeoutMs?: number): Promi
       }
 
       const courses = parseGradesFromJson(raw);
+      // 统一 uid 格式为 course_{courseId}_{semesterId}，与课表 API 保持一致
+      for (const c of courses) {
+        c.uid = `course_${c.courseId}_${semesterId}`;
+      }
       console.info(`[NetworkService] Parsed ${courses.length} grade records for ${semesterId}`);
       return { success: true, data: courses, message: '获取成功' };
     } catch (err) {

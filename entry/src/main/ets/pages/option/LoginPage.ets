@@ -69,7 +69,7 @@ export struct LoginPage {
           title: '登录失败',
           message: message,
           buttons: [
-            { text: '确定', color: '#000000' }
+            { text: '确定', color: $r('app.color.text_primary') }
           ]
         }).catch(() => {
           // TODO: Implement error handling.

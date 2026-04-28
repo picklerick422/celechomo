@@ -1,7 +1,8 @@
 // OptionPage.ets - 设置主页面
 
-import { AppKeys } from '../Index';
+import { AppKeys, ThemeMode } from '../Index';
 import { StorageService } from '../../service/StorageService';
+import { applyThemeMode, themeModeLabel } from '../../utils/ThemeUtil';
 import { TimeRange } from '../../model/Semester';
 import common from '@ohos.app.ability.common';
 import { setCookies, setCachedStudentInfo } from '../../service/NetworkService';
@@ -19,6 +20,7 @@ export struct OptionPage {
   @StorageLink(AppKeys.IS_LOGGED_IN) isLoggedIn: boolean = false;
   @StorageLink(AppKeys.HIDE_GPA) hideGpa: boolean = false;
   @StorageLink(AppKeys.GPA_CALC_MODE) gpaCalcMode: string = 'highest';
+  @StorageLink(AppKeys.THEME_MODE) themeMode: string = 'system';
   @StorageLink(AppKeys.WORK_DURATION) workDuration: number = 50;
   @StorageLink(AppKeys.REST_DURATION) restDuration: number = 10;
   @StorageLink(AppKeys.ALLOW_TIMES) allowTimes: TimeRange[] = [];
@@ -54,8 +56,8 @@ export struct OptionPage {
         title: '退出登录',
         message: `确定要退出 ${username} 的账号吗？`,
         buttons: [
-          { text: '取消', color: '#000000' },
-          { text: '退出登录', color: '#FF0000' }
+          { text: '取消', color: $r('app.color.text_primary') },
+          { text: '退出登录', color: $r('app.color.color_red') }
         ]
       }).then(async (result) => {
         if (result && (result as promptAction.ShowDialogSuccessResponse).index === 1) {
@@ -373,30 +375,36 @@ export struct OptionPage {
       Row({ space: 14 }) {
         this.IconLabel('⛱️', '#636366')
         Text('外观模式').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
-        Text('跟随系统').fontSize(14).fontColor($r('app.color.text_secondary'))
+        Text(themeModeLabel(this.themeMode as ThemeMode)).fontSize(14).fontColor($r('app.color.text_secondary'))
         Image($r('sys.media.ohos_ic_public_arrow_right'))
           .width(14).height(14).fillColor($r('app.color.text_tertiary'))
       }
       .width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
       .onClick(() => {
         const storageService = this.storageService;
+        const setMode = (mode: ThemeMode) => {
+          AppStorage.set(AppKeys.THEME_MODE, mode);
+          try {
+            const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+            applyThemeMode(ctx, mode);
+          } catch {}
+          storageService?.saveThemeMode(mode);
+        };
         try {
           this.getUIContext().getPromptAction().showDialog({
             title: '外观模式',
             message: '请选择外观模式',
             buttons: [
-              { text: '跟随系统', color: '#000000' },
-              { text: '浅色模式', color: '#000000' },
-              { text: '深色模式', color: '#000000' }
+              { text: '跟随系统', color: $r('app.color.text_primary') },
+              { text: '浅色模式', color: $r('app.color.text_primary') },
+              { text: '深色模式', color: $r('app.color.text_primary') }
             ]
           }).then((result) => {
-            if (result && (result as promptAction.ShowDialogSuccessResponse).index === 0) {
-              storageService?.saveThemeMode('system');
-            } else if (result && (result as promptAction.ShowDialogSuccessResponse).index === 1) {
-              storageService?.saveThemeMode('light');
-            } else if (result && (result as promptAction.ShowDialogSuccessResponse).index === 2) {
-              storageService?.saveThemeMode('dark');
-            }
+            if (!result) return;
+            const idx = (result as promptAction.ShowDialogSuccessResponse).index;
+            if (idx === 0) setMode('system');
+            else if (idx === 1) setMode('light');
+            else if (idx === 2) setMode('dark');
           }).catch(() => {
             // ignore
           });
