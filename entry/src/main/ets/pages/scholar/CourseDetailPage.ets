@@ -138,6 +138,410 @@ export struct CourseDetailPage {
     return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${fmt(d.getHours())}:${fmt(d.getMinutes())}`;
   }
 
+  // ============= UI Builder 方法 =============
+
+  @Builder
+  CourseHeaderCard() {
+    Column({ space: 16 }) {
+      Row({ space: 16 }) {
+        Column() {
+          Text(this.targetCourseState.name.length > 0 ? this.targetCourseState.name.substring(0, 1) : '?')
+            .fontSize(24)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.White)
+        }
+        .width(56)
+        .height(56)
+        .borderRadius(16)
+        .backgroundColor(colorFromUid(this.targetCourseState.uid))
+        .justifyContent(FlexAlign.Center)
+        .shadow({ radius: 8, color: colorFromUid(this.targetCourseState.uid) + '60', offsetX: 0, offsetY: 4 })
+
+        Column({ space: 6 }) {
+          Text(this.targetCourseState.name)
+            .fontSize(20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+
+          Row({ space: 8 }) {
+            if (this.targetCourseState.courseId.length > 0) {
+              Text(this.targetCourseState.courseId)
+                .fontSize(11)
+                .fontColor($r('app.color.color_blue'))
+                .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+                .backgroundColor('#0D007AFF')
+                .borderRadius(6)
+            }
+            if (this.targetCourseState.hasGrade) {
+              StatusBadge({ text: '已结课', color: '#8E8E93' })
+            } else if (this.targetCourseState.credits > 0) {
+              StatusBadge({ text: '进行中', color: '#34C759' })
+            } else {
+              StatusBadge({ text: '未完结', color: '#FF9500' })
+            }
+          }
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+
+      Divider()
+        .strokeWidth(0.5)
+        .color($r('app.color.progress_bg'))
+        .margin({ left: 4, right: 4 })
+
+      Row() {
+        Column({ space: 6 }) {
+          Row({ space: 4 }) {
+            Text('👤')
+              .fontSize(12)
+            Text('教师')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          Text(this.targetCourseState.teacher.length > 0 ? this.targetCourseState.teacher : '未知')
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .fontWeight(FontWeight.Medium)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+
+        Divider()
+          .width(0.5)
+          .height(36)
+          .color($r('app.color.progress_bg'))
+          .vertical(true)
+
+        Column({ space: 6 }) {
+          Row({ space: 4 }) {
+            Text('📊')
+              .fontSize(12)
+            Text('学分')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          Text(this.targetCourseState.credits > 0 ? this.targetCourseState.credits.toFixed(1) : '-')
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .fontWeight(FontWeight.Medium)
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+
+        Divider()
+          .width(0.5)
+          .height(36)
+          .color($r('app.color.progress_bg'))
+          .vertical(true)
+
+        Column({ space: 6 }) {
+          Row({ space: 4 }) {
+            Text('📅')
+              .fontSize(12)
+            Text('学期')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          Text(this.targetSemesterState.id.length > 0 ? this.targetSemesterState.name : this.targetCourseState.semester)
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .fontWeight(FontWeight.Medium)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .padding({ left: 4, right: 4 })
+    }
+    .width('100%')
+    .padding(20)
+    .backgroundColor($r('app.color.card_background'))
+    .borderRadius(20)
+    .shadow({ radius: 12, color: $r('app.color.shadow_color'), offsetX: 0, offsetY: 4 })
+  }
+
+  @Builder
+  GradeCard() {
+    Column({ space: 16 }) {
+      Row({ space: 8 }) {
+        Text('🎯')
+          .fontSize(16)
+        Text('成绩')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      Row() {
+        Column({ space: 4 }) {
+          Text(this.fmtGrade(this.targetCourseState.grade))
+            .fontSize(40)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.getGradeColor(this.targetCourseState.grade))
+          Text('分数')
+            .fontSize(11)
+            .fontColor($r('app.color.text_tertiary'))
+        }
+        .layoutWeight(1)
+
+        Divider()
+          .width(0.5)
+          .height(50)
+          .color($r('app.color.progress_bg'))
+          .vertical(true)
+
+        Column({ space: 4 }) {
+          Text(this.fmtGpa(this.targetCourseState.gradePoint))
+            .fontSize(22)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+          Text('绩点')
+            .fontSize(11)
+            .fontColor($r('app.color.text_tertiary'))
+        }
+        .layoutWeight(1)
+
+        Divider()
+          .width(0.5)
+          .height(50)
+          .color($r('app.color.progress_bg'))
+          .vertical(true)
+
+        Column({ space: 4 }) {
+          Text(this.targetCourseState.gradeLevel.length > 0 ? this.targetCourseState.gradeLevel : '-')
+            .fontSize(22)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+          Text('等级')
+            .fontSize(11)
+            .fontColor($r('app.color.text_tertiary'))
+        }
+        .layoutWeight(1)
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .padding(20)
+    .backgroundColor($r('app.color.card_background'))
+    .borderRadius(20)
+    .shadow({ radius: 12, color: $r('app.color.shadow_color'), offsetX: 0, offsetY: 4 })
+  }
+
+  @Builder
+  TimeSlotsCard() {
+    Column({ space: 14 }) {
+      Row({ space: 8 }) {
+        Text('⏰')
+          .fontSize(16)
+        Text('上课时间')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      ForEach(this.targetCourseState.timeSlots, (slot: CourseTimeSlot) => {
+        Row({ space: 12 }) {
+          Column() {
+            Text('🕐')
+              .fontSize(18)
+          }
+          .width(36)
+          .height(36)
+          .borderRadius(10)
+          .backgroundColor('#FFF3E0')
+          .justifyContent(FlexAlign.Center)
+
+          Column({ space: 4 }) {
+            Text(this.formatSlot(slot))
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+              .fontWeight(FontWeight.Medium)
+            Text(this.formatWeeks(slot.weeks))
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .padding(12)
+        .backgroundColor('#F9F9FB')
+        .borderRadius(12)
+      }, (slot: CourseTimeSlot) => `${slot.weekDay}-${slot.startPeriod}-${slot.endPeriod}-${slot.location}`)
+    }
+    .width('100%')
+    .padding(20)
+    .backgroundColor($r('app.color.card_background'))
+    .borderRadius(20)
+    .shadow({ radius: 12, color: $r('app.color.shadow_color'), offsetX: 0, offsetY: 4 })
+  }
+
+  @Builder
+  ExamsCard() {
+    Column({ space: 14 }) {
+      Row({ space: 8 }) {
+        Text('📝')
+          .fontSize(16)
+        Text('考试安排')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      ForEach(this.courseExamsList, (exam: Exam) => {
+        Row({ space: 12 }) {
+          Column() {
+            Text(exam.type === 'midterm' ? '期中' : '期末')
+              .fontSize(11)
+              .fontColor(Color.White)
+              .fontWeight(FontWeight.Medium)
+          }
+          .width(40)
+          .height(40)
+          .borderRadius(10)
+          .backgroundColor(exam.type === 'midterm' ? '#FF9500' : '#FF3B30')
+          .justifyContent(FlexAlign.Center)
+
+          Column({ space: 4 }) {
+            Text(this.formatExamTime(exam))
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+              .fontWeight(FontWeight.Medium)
+            if (exam.location.length > 0) {
+              Text(`${exam.location}${exam.seatNo.length > 0 ? ' · 座位 ' + exam.seatNo : ''}`)
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+            }
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .padding(12)
+        .backgroundColor('#F9F9FB')
+        .borderRadius(12)
+      }, (exam: Exam) => exam.uid)
+    }
+    .width('100%')
+    .padding(20)
+    .backgroundColor($r('app.color.card_background'))
+    .borderRadius(20)
+    .shadow({ radius: 12, color: $r('app.color.shadow_color'), offsetX: 0, offsetY: 4 })
+  }
+
+  @Builder
+  TodosCard() {
+    Column({ space: 14 }) {
+      Row({ space: 8 }) {
+        Text('📋')
+          .fontSize(16)
+        Text('作业')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      ForEach(this.courseTodosList, (todo: Todo) => {
+        Row({ space: 12 }) {
+          Column() {
+            Text('✏️')
+              .fontSize(18)
+          }
+          .width(36)
+          .height(36)
+          .borderRadius(10)
+          .backgroundColor('#E3F2FD')
+          .justifyContent(FlexAlign.Center)
+
+          Column({ space: 4 }) {
+            Text(todo.title)
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+              .fontWeight(FontWeight.Medium)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+            Text(this.formatTodoTime(todo))
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .padding(12)
+        .backgroundColor('#F9F9FB')
+        .borderRadius(12)
+      }, (todo: Todo) => todo.uid)
+    }
+    .width('100%')
+    .padding(20)
+    .backgroundColor($r('app.color.card_background'))
+    .borderRadius(20)
+    .shadow({ radius: 12, color: $r('app.color.shadow_color'), offsetX: 0, offsetY: 4 })
+  }
+
+  @Builder
+  DebugInfoPanel() {
+    Column({ space: 12 }) {
+      Text('❓')
+        .fontSize(48)
+      Text('未找到课程信息')
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+      Text('课程可能已被删除或数据未同步')
+        .fontSize(13)
+        .fontColor($r('app.color.text_tertiary'))
+
+      Column({ space: 6 }) {
+        Text(`调试: courseUid=${this.courseUid}`)
+          .fontSize(10)
+          .fontColor($r('app.color.text_tertiary'))
+        Text(`调试: semesterId=[${this.semesterId}] len=${this.semesterId.length}`)
+          .fontSize(10)
+          .fontColor($r('app.color.text_tertiary'))
+        Text(`调试: appStorageLen=${(AppStorage.get<Semester[]>(AppKeys.SEMESTERS) ?? []).length}`)
+          .fontSize(10)
+          .fontColor($r('app.color.text_tertiary'))
+        Text(`调试: appStorageIds=${(AppStorage.get<Semester[]>(AppKeys.SEMESTERS) ?? []).map(s => `[${s.id}]`).join(',')}`)
+          .fontSize(10)
+          .fontColor($r('app.color.text_tertiary'))
+        Text(`调试: targetSemester=${this.targetSemesterState.id.length > 0 ? this.targetSemesterState.id : 'null'}`)
+          .fontSize(10)
+          .fontColor($r('app.color.text_tertiary'))
+        Text(`调试: targetCourse=${this.targetCourseState.uid.length > 0 ? this.targetCourseState.name : 'null'}`)
+          .fontSize(10)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      .margin({ top: 16 })
+      .padding(16)
+      .backgroundColor($r('app.color.progress_bg'))
+      .borderRadius(12)
+      .width('100%')
+    }
+    .layoutWeight(1)
+    .justifyContent(FlexAlign.Center)
+    .padding(24)
+  }
+
   build() {
     NavDestination() {
       Column() {
@@ -145,231 +549,63 @@ export struct CourseDetailPage {
         Row() {
           Button({ type: ButtonType.Normal }) {
             Image($r('sys.media.ohos_ic_public_arrow_left'))
-              .width(22).height(22).fillColor($r('app.color.color_blue'))
+              .width(24)
+              .height(24)
+              .fillColor($r('app.color.color_blue'))
           }
-          .backgroundColor(Color.Transparent).padding(8)
+          .backgroundColor(Color.Transparent)
+          .padding(8)
           .onClick(() => this.pathStack?.pop())
 
           Text('课程详情')
-            .fontSize(17).fontWeight(FontWeight.Medium)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
-            .layoutWeight(1).textAlign(TextAlign.Center)
+            .layoutWeight(1)
+            .textAlign(TextAlign.Center)
 
-          Row().width(46)
+          Row()
+            .width(40)
         }
         .width('100%')
         .padding({ left: 8, right: 8, top: 8, bottom: 8 })
         .backgroundColor($r('app.color.card_background'))
 
         Scroll() {
-          Column({ space: 12 }) {
+          Column({ space: 16 }) {
             if (this.hasTargetData) {
-              // 基本信息卡片
-              Column({ space: 8 }) {
-                Row() {
-                  Row()
-                    .width(4)
-                    .height(48)
-                    .borderRadius(2)
-                    .backgroundColor(colorFromUid(this.targetCourseState.uid))
+              this.CourseHeaderCard()
 
-                  Column({ space: 4 }) {
-                    Text(this.targetCourseState.name)
-                      .fontSize(18)
-                      .fontWeight(FontWeight.Bold)
-                      .fontColor($r('app.color.text_primary'))
-                      .maxLines(2)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    if (this.targetCourseState.courseId.length > 0) {
-                      Text(this.targetCourseState.courseId)
-                        .fontSize(12)
-                        .fontColor($r('app.color.text_tertiary'))
-                    }
-                  }
-                  .layoutWeight(1)
-                  .alignItems(HorizontalAlign.Start)
-                  .margin({ left: 10 })
-                }
-                .width('100%')
-
-                Divider().strokeWidth(0.5).color($r('app.color.progress_bg'))
-
-                Row() {
-                  Column({ space: 2 }) {
-                    Text('教师').fontSize(11).fontColor($r('app.color.text_tertiary'))
-                    Text(this.targetCourseState.teacher.length > 0 ? this.targetCourseState.teacher : '未知')
-                      .fontSize(14).fontColor($r('app.color.text_primary'))
-                  }
-                  .layoutWeight(1)
-
-                  Column({ space: 2 }) {
-                    Text('学分').fontSize(11).fontColor($r('app.color.text_tertiary'))
-                    Text(this.targetCourseState.credits > 0 ? this.targetCourseState.credits.toFixed(1) : '-')
-                      .fontSize(14).fontColor($r('app.color.text_primary'))
-                  }
-                  .layoutWeight(1)
-
-                  Column({ space: 2 }) {
-                    Text('学期').fontSize(11).fontColor($r('app.color.text_tertiary'))
-                    Text(this.targetSemesterState.id.length > 0 ? this.targetSemesterState.name : this.targetCourseState.semester)
-                      .fontSize(14).fontColor($r('app.color.text_primary'))
-                  }
-                  .layoutWeight(1)
-                }
-                .width('100%')
-              }
-              .width('100%')
-              .padding(16)
-              .backgroundColor($r('app.color.card_background'))
-              .borderRadius(12)
-
-              // 成绩卡片
               if (this.targetCourseState.hasGrade) {
-                Column({ space: 8 }) {
-                  Text('成绩').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                  Row() {
-                    Column({ space: 2 }) {
-                      Text('分数').fontSize(11).fontColor($r('app.color.text_tertiary'))
-                      Text(this.fmtGrade(this.targetCourseState.grade))
-                        .fontSize(28).fontWeight(FontWeight.Bold)
-                        .fontColor(this.getGradeColor(this.targetCourseState.grade))
-                    }
-                    .layoutWeight(1)
-
-                    Column({ space: 2 }) {
-                      Text('绩点').fontSize(11).fontColor($r('app.color.text_tertiary'))
-                      Text(this.fmtGpa(this.targetCourseState.gradePoint))
-                        .fontSize(28).fontWeight(FontWeight.Bold)
-                        .fontColor($r('app.color.text_primary'))
-                    }
-                    .layoutWeight(1)
-
-                    Column({ space: 2 }) {
-                      Text('等级').fontSize(11).fontColor($r('app.color.text_tertiary'))
-                      Text(this.targetCourseState.gradeLevel.length > 0 ? this.targetCourseState.gradeLevel : '-')
-                        .fontSize(28).fontWeight(FontWeight.Bold)
-                        .fontColor($r('app.color.text_primary'))
-                    }
-                    .layoutWeight(1)
-                  }
-                  .width('100%')
-                }
-                .width('100%')
-                .padding(16)
-                .backgroundColor($r('app.color.card_background'))
-                .borderRadius(12)
+                this.GradeCard()
               }
 
-              // 上课时间卡片
               if (this.targetCourseState.timeSlots.length > 0) {
-                Column({ space: 8 }) {
-                  Text('上课时间').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                  ForEach(this.targetCourseState.timeSlots, (slot: CourseTimeSlot) => {
-                    Row({ space: 8 }) {
-                      Text(this.formatSlot(slot))
-                        .fontSize(13).fontColor($r('app.color.text_primary'))
-                        .layoutWeight(1)
-                      Text(this.formatWeeks(slot.weeks))
-                        .fontSize(11).fontColor($r('app.color.text_secondary'))
-                    }
-                    .width('100%')
-                  }, (slot: CourseTimeSlot) => `${slot.weekDay}-${slot.startPeriod}-${slot.endPeriod}-${slot.location}`)
-                }
-                .width('100%')
-                .padding(16)
-                .backgroundColor($r('app.color.card_background'))
-                .borderRadius(12)
+                this.TimeSlotsCard()
               }
 
-              // 考试卡片
               if (this.courseExamsList.length > 0) {
-                Column({ space: 8 }) {
-                  Text('考试安排').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                  ForEach(this.courseExamsList, (exam: Exam) => {
-                    Row({ space: 10 }) {
-                      Row()
-                        .width(10).height(10)
-                        .borderRadius(exam.type === 'midterm' ? 5 : 2)
-                        .backgroundColor('#F48FB1')
-                      Column({ space: 2 }) {
-                        Text(`${exam.type === 'midterm' ? '期中' : '期末'} · ${this.formatExamTime(exam)}`)
-                          .fontSize(13).fontColor($r('app.color.text_primary'))
-                        if (exam.location.length > 0) {
-                          Text(`${exam.location}${exam.seatNo.length > 0 ? ' · 座位 ' + exam.seatNo : ''}`)
-                            .fontSize(11).fontColor($r('app.color.text_secondary'))
-                        }
-                      }
-                      .layoutWeight(1)
-                    }
-                    .width('100%')
-                  }, (exam: Exam) => exam.uid)
-                }
-                .width('100%')
-                .padding(16)
-                .backgroundColor($r('app.color.card_background'))
-                .borderRadius(12)
+                this.ExamsCard()
               }
 
-              // 作业卡片
               if (this.courseTodosList.length > 0) {
-                Column({ space: 8 }) {
-                  Text('作业').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                  ForEach(this.courseTodosList, (todo: Todo) => {
-                    Row({ space: 8 }) {
-                      Text(todo.title)
-                        .fontSize(13).fontColor($r('app.color.text_primary'))
-                        .layoutWeight(1)
-                      Text(this.formatTodoTime(todo))
-                        .fontSize(11).fontColor($r('app.color.text_secondary'))
-                    }
-                    .width('100%')
-                  }, (todo: Todo) => todo.uid)
-                }
-                .width('100%')
-                .padding(16)
-                .backgroundColor($r('app.color.card_background'))
-                .borderRadius(12)
+                this.TodosCard()
               }
             } else {
-              // 课程未找到 — 显示调试信息帮助定位问题
-              Column({ space: 8 }) {
-                Text('未找到课程信息')
-                  .fontSize(16).fontColor($r('app.color.text_secondary'))
-                Text('课程可能已被删除或数据未同步')
-                  .fontSize(13).fontColor($r('app.color.text_tertiary'))
-
-                Column({ space: 4 }) {
-                  Text(`调试: courseUid=${this.courseUid}`)
-                    .fontSize(10).fontColor($r('app.color.text_tertiary'))
-                  Text(`调试: semesterId=[${this.semesterId}] len=${this.semesterId.length}`)
-                    .fontSize(10).fontColor($r('app.color.text_tertiary'))
-                  Text(`调试: appStorageLen=${(AppStorage.get<Semester[]>(AppKeys.SEMESTERS) ?? []).length}`)
-                    .fontSize(10).fontColor($r('app.color.text_tertiary'))
-                  Text(`调试: appStorageIds=${(AppStorage.get<Semester[]>(AppKeys.SEMESTERS) ?? []).map(s => `[${s.id}]`).join(',')}`)
-                    .fontSize(10).fontColor($r('app.color.text_tertiary'))
-                  Text(`调试: targetSemester=${this.targetSemesterState.id.length > 0 ? this.targetSemesterState.id : 'null'}`)
-                    .fontSize(10).fontColor($r('app.color.text_tertiary'))
-                  Text(`调试: targetCourse=${this.targetCourseState.uid.length > 0 ? this.targetCourseState.name : 'null'}`)
-                    .fontSize(10).fontColor($r('app.color.text_tertiary'))
-                }
-                .margin({ top: 12 })
-                .padding(12)
-                .backgroundColor($r('app.color.progress_bg'))
-                .borderRadius(8)
-              }
-              .layoutWeight(1)
-              .justifyContent(FlexAlign.Center)
+              this.DebugInfoPanel()
             }
 
             Blank().height(80)
           }
           .padding(16)
+          .width('100%')
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring)
       }
-      .width('100%').height('100%')
+      .width('100%')
+      .height('100%')
       .backgroundColor($r('app.color.app_background'))
     }
     .hideTitleBar(true)
@@ -379,7 +615,6 @@ export struct CourseDetailPage {
       this.courseUid = params?.['courseUid'] ?? '';
       this.semesterId = params?.['semesterId'] ?? '';
       console.info(`[CourseDetailPage] onReady: courseUid=${this.courseUid}, semesterId=${this.semesterId}`);
-      // 一次性解析目标学期和课程，存入 @State
       this.resolveTarget();
     })
   }

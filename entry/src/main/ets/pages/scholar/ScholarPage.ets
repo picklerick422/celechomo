@@ -54,7 +54,7 @@ export struct ScholarPage {
 
   // 学期选择器（胶囊式分段控件）
   @State semesterDragOffset: number = 0;
-  private readonly semesterCellWidth: number = 92;
+  private readonly semesterCellWidth: number = 108;
 
   private get studentInfo(): StudentInfo | null {
     const str = this.studentInfoStr;
@@ -759,22 +759,78 @@ export struct ScholarPage {
         // 1. 底层胶囊背景（仅背景，不含文字）
         Row()
           .width(Math.max((this.semesters ?? []).length, 1) * this.semesterCellWidth)
-          .height(36)
-          .borderRadius(18)
+          .height(44)
+          .borderRadius(22)
           .backgroundColor($r('app.color.tile_bg'))
+          .border({ width: 0.5, color: '#10000000' })
+          .shadow({
+            radius: 6,
+            color: '#14000000',
+            offsetX: 0,
+            offsetY: 2
+          })
 
         // 2. 指示器：主题色小胶囊（仅背景，位于文字后面），可拖拽
         if ((this.semesters ?? []).length > 0) {
-          Row()
+          Row() {
+            // 粒子特效（始终运行，拖拽时尾迹效果更明显）
+            Particle({
+              particles: [
+                {
+                  emitter: {
+                    particle: {
+                      type: ParticleType.POINT,
+                      config: { radius: 1.2 },
+                      count: 28,
+                      lifetime: 1000,
+                      lifetimeRange: 300
+                    },
+                    emitRate: 14,
+                    shape: ParticleEmitterShape.RECTANGLE,
+                    position: [0, 0],
+                    size: ['100%', '100%']
+                  },
+                  color: {
+                    range: ['#FFFFFFFF', '#FFFFFFFF']
+                  },
+                  opacity: {
+                    range: [0.5, 0.95],
+                    updater: {
+                      type: ParticleUpdater.CURVE,
+                      config: [
+                        {
+                          from: 0.9,
+                          to: 0,
+                          startMillis: 200,
+                          endMillis: 1000
+                        }
+                      ]
+                    }
+                  },
+                  scale: {
+                    range: [0.4, 1.6]
+                  },
+                  velocity: {
+                    speed: [3, 12],
+                    angle: [-180, 180]
+                  }
+                }
+              ]
+            })
+              .width('100%')
+              .height('100%')
+              .hitTestBehavior(HitTestMode.None)
+          }
             .width(this.semesterCellWidth - 4)
-            .height(32)
-            .borderRadius(16)
+            .height(38)
+            .borderRadius(19)
             .backgroundColor($r('app.color.color_blue'))
+            .clip(true)
             .shadow({
-              radius: 6,
-              color: '#33007AFF',
+              radius: 10,
+              color: '#40007AFF',
               offsetX: 0,
-              offsetY: 2
+              offsetY: 4
             })
             .offset({ x: this.indicatorOffsetX(), y: 0 })
             .gesture(
@@ -798,9 +854,9 @@ export struct ScholarPage {
           ForEach(this.semesters, (sem: Semester, idx: number) => {
             Text(sem.name)
               .width(this.semesterCellWidth)
-              .height(36)
+              .height(44)
               .textAlign(TextAlign.Center)
-              .fontSize(12)
+              .fontSize(14)
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_secondary'))
               .maxLines(1)
@@ -809,7 +865,7 @@ export struct ScholarPage {
               .hitTestBehavior(HitTestMode.Transparent)
           }, (sem: Semester) => sem.id)
         }
-        .height(36)
+        .height(44)
         .hitTestBehavior(HitTestMode.Transparent)
 
         // 4. 白色文字层（裁剪到指示器范围内，仅被胶囊覆盖的部分变白）
@@ -819,9 +875,9 @@ export struct ScholarPage {
               ForEach(this.semesters, (sem: Semester, idx: number) => {
                 Text(sem.name)
                   .width(this.semesterCellWidth)
-                  .height(36)
+                  .height(44)
                   .textAlign(TextAlign.Center)
-                  .fontSize(12)
+                  .fontSize(14)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(Color.White)
                   .maxLines(1)
@@ -829,25 +885,25 @@ export struct ScholarPage {
                   .hitTestBehavior(HitTestMode.None)
               }, (sem: Semester) => sem.id)
             }
-            .height(36)
+            .height(44)
             .offset({ x: -this.indicatorOffsetX(), y: 0 })
             .hitTestBehavior(HitTestMode.None)
           }
           .width(this.semesterCellWidth - 4)
-          .height(32)
-          .borderRadius(16)
+          .height(38)
+          .borderRadius(19)
           .clip(true)
           .offset({ x: this.indicatorOffsetX(), y: 0 })
           .hitTestBehavior(HitTestMode.None)
         }
       }
-      .height(36)
+      .height(44)
       .padding({ left: 16, right: 16 })
     }
     .scrollable(ScrollDirection.Horizontal)
     .scrollBar(BarState.Off)
     .width('100%')
-    .height(44)
+    .height(52)
   }
 
   @Builder
@@ -1451,6 +1507,7 @@ export struct ScholarPage {
         }
       }
       .backgroundColor($r('app.color.app_background'))
+      .padding({ bottom: 6 })
       .zIndex(1)
 
       // 内容区域
@@ -1511,18 +1568,18 @@ export struct ScholarPage {
                 // 显示学期信息
                 Row() {
                   Text(this._currentSemester.name)
-                    .fontSize(15)
-                    .fontColor($r('app.color.text_secondary'))
-                    .fontWeight(FontWeight.Medium)
+                    .fontSize(22)
+                    .fontColor($r('app.color.text_primary'))
+                    .fontWeight(FontWeight.Bold)
                   Blank()
                   if (this._currentSemester !== null && this._currentSemester !== undefined && (this._currentSemester.courses?.length ?? 0) === 0 && !this.isRefreshing) {
                     Text('点击刷新获取数据')
-                      .fontSize(12)
+                      .fontSize(13)
                       .fontColor($r('app.color.color_blue'))
                       .onClick(() => this.triggerFetchCurrentSemester())
                   }
                 }
-                .padding({ left: 4, right: 4, bottom: 4 })
+                .padding({ left: 4, right: 4, top: 4, bottom: 6 })
 
                 // 诊断信息（调试用，确认数据状态）
                 Row() {
