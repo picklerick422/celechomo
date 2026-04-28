@@ -826,10 +826,12 @@ export struct ScholarPage {
                   .fontColor(Color.White)
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .hitTestBehavior(HitTestMode.None)
               }, (sem: Semester) => sem.id)
             }
             .height(36)
             .offset({ x: -this.indicatorOffsetX(), y: 0 })
+            .hitTestBehavior(HitTestMode.None)
           }
           .width(this.semesterCellWidth - 4)
           .height(32)

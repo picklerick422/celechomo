@@ -4,6 +4,7 @@ import { Course, Exam, Todo, CourseTimeSlot } from '../../model/Course';
 import { Semester } from '../../model/Semester';
 import { AppKeys } from '../Index';
 import { colorFromUid } from '../../model/Period';
+import { StatusBadge } from '../../components/CommonComponents';
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 
