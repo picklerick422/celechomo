@@ -1,4 +1,4 @@
-// CalendarPage.ets - 日程页面（日历视图 + 课表视图）
+// CalendarPage.ets - 日程页面（月/周日历视图）
 
 import { Period, PeriodType, colorFromUid } from '../../model/Period';
 import { Semester, PERIOD_TIMES } from '../../model/Semester';
@@ -7,16 +7,6 @@ import { AppKeys } from '../Index';
 import { EmptyView } from '../../components/CommonComponents';
 
 type CalendarFormat = 'month' | 'week';
-type ViewMode = 'calendar' | 'schedule';
-
-interface ScheduleCourseItem {
-  name: string;
-  location: string;
-  weekDay: number;
-  startPeriod: number;
-  endPeriod: number;
-  color: string;
-}
 
 interface MergedSlot {
   startPeriod: number;
@@ -24,13 +14,14 @@ interface MergedSlot {
   location: string;
 }
 
+interface CourseScheduleParam {
+  semesterId: string;
+  isFirstHalf: boolean;
+}
+
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月',
   '7月', '8月', '9月', '10月', '11月', '12月'];
-const PERIOD_LABELS: string[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13'];
-const ROW_HEIGHT: number = 48;
-const LABEL_PCT: number = 9.5;
-const COL_WIDTH_PCT: number = (100 - LABEL_PCT) / 7;
 
 @Component
 export struct CalendarPage {
@@ -40,8 +31,6 @@ export struct CalendarPage {
   @State selectedDay: Date = new Date();
   @State focusedMonth: Date = new Date();
   @State calendarFormat: CalendarFormat = 'month';
-  @State viewMode: ViewMode = 'calendar';
-  @State isFirstHalf: boolean = true;
   @State isRefreshing: boolean = false;
   @State swiperIndex: number = 2;
   @State swiperDuration: number = 250;
@@ -49,15 +38,7 @@ export struct CalendarPage {
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
 
-  /** 获取当前学期的半学期标签 */
-  private getHalfSemesterLabels(): [string, string] {
-    const sem = this.getCurrentSemester();
-    if (!sem) return ['前半学期', '后半学期'];
-    if (sem.isSpring) return ['春学期', '夏学期'];
-    return ['秋学期', '冬学期'];
-  }
-
-  /** Swiper辅助：获取指定索引对应的月份（index 0~4，中心2=当月） */
+  /** Swiper辅助:获取指定索引对应的月份(index 0~4,中心2=当月) */
   private getSwiperMonth(index: number): Date {
     const offset = index - 2;
     return new Date(this.focusedMonth.getFullYear(), this.focusedMonth.getMonth() + offset, 1);
@@ -397,7 +378,7 @@ export struct CalendarPage {
     }
   }
 
-  // ============= 课表视图 =============
+  // ============= 课表跳转 =============
 
   private getCurrentSemester(): Semester | null {
     const now = new Date();
@@ -409,32 +390,12 @@ export struct CalendarPage {
     return this.semesters.length > 0 ? this.semesters[this.semesters.length - 1] : null;
   }
 
-  private getScheduleCourses(): ScheduleCourseItem[] {
-    const semester = this.getCurrentSemester();
-    if (!semester) return [];
-    const now = new Date();
-    const week = semester.currentWeek(now);
-    const result: ScheduleCourseItem[] = [];
-
-    for (const course of semester.courses) {
-      const courseColor = colorFromUid(course.uid);
-      for (const slot of course.timeSlots) {
-        // 半学期过滤：first=前半(秋/春), second=后半(冬/夏)
-        if (slot.halfType === 'first' && !this.isFirstHalf) continue;
-        if (slot.halfType === 'second' && this.isFirstHalf) continue;
-        if (week > 0 && !slot.weeks.includes(week)) continue;
-        const item: ScheduleCourseItem = {
-          name: course.shortName || course.name.slice(0, 6),
-          location: slot.location,
-          weekDay: slot.weekDay,
-          startPeriod: slot.startPeriod,
-          endPeriod: slot.endPeriod,
-          color: courseColor
-        };
-        result.push(item);
-      }
-    }
-    return result;
+  private buildCourseScheduleParam(): CourseScheduleParam | null {
+    const sem = this.getCurrentSemester();
+    if (!sem) return null;
+    const week = typeof sem.currentWeek === 'function' ? sem.currentWeek(new Date()) : 0;
+    const isFirstHalf = week > 0 ? week <= (sem.halfSemesterWeeks ?? 8) : true;
+    return { semesterId: sem.id, isFirstHalf };
   }
 
   // ============= UI 构建 =============
@@ -689,188 +650,81 @@ export struct CalendarPage {
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
   }
 
-  @Builder
-  ScheduleGrid() {
-    Column() {
-      Row({ space: 8 }) {
-        Text(this.getHalfSemesterLabels()[0])
-          .fontSize(13)
-          .fontColor(this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
-          .fontWeight(this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-          .borderRadius(16)
-          .backgroundColor(this.isFirstHalf ? $r('app.color.selected_day_bg') : Color.Transparent)
-          .onClick(() => { this.isFirstHalf = true; })
-
-        Text(this.getHalfSemesterLabels()[1])
-          .fontSize(13)
-          .fontColor(!this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
-          .fontWeight(!this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-          .borderRadius(16)
-          .backgroundColor(!this.isFirstHalf ? $r('app.color.selected_day_bg') : Color.Transparent)
-          .onClick(() => { this.isFirstHalf = false; })
-      }
-      .padding({ left: 16, top: 8, bottom: 8 })
-
-      Row() {
-        Text('').width(36)
-        ForEach(WEEKDAYS, (day: string) => {
-          Text(day)
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .layoutWeight(1)
-            .textAlign(TextAlign.Center)
-        })
-      }
-      .width('100%')
-      .padding({ left: 4, right: 4, bottom: 4 })
-
-      Scroll() {
-        Stack({ alignContent: Alignment.TopStart }) {
-          Column() {
-            ForEach(PERIOD_LABELS, (label: string, idx: number) => {
-              Row() {
-                Text(label)
-                  .width(36)
-                  .fontSize(10)
-                  .fontColor($r('app.color.text_tertiary'))
-                  .textAlign(TextAlign.Center)
-                  .height(ROW_HEIGHT)
-
-                ForEach(WEEKDAYS, (_: string) => {
-                  Row()
-                    .layoutWeight(1)
-                    .height(ROW_HEIGHT)
-                    .border({
-                      width: { left: 0.5 },
-                      color: $r('app.color.separator'),
-                      style: BorderStyle.Dashed
-                    })
-                })
-              }
-              .width('100%')
-              .border({
-                width: { bottom: 0.5 },
-                color: $r('app.color.separator'),
-                style: BorderStyle.Dashed
-              })
-            })
-          }
-
-          ForEach(this.getScheduleCourses(), (course: ScheduleCourseItem) => {
-            this.CourseCard(course, ROW_HEIGHT)
-          }, (c: ScheduleCourseItem) => `${c.weekDay}-${c.startPeriod}`)
-        }
-        .width('100%')
-      }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-    }
-    .layoutWeight(1)
-  }
-
-  @Builder
-  CourseCard(course: ScheduleCourseItem, rowHeight: number) {
-    Column({ space: 2 }) {
-      Text(course.name)
-        .fontSize(10)
-        .fontColor(Color.White)
-        .fontWeight(FontWeight.Medium)
-        .maxLines(3)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-      if (course.location.length > 0) {
-        Text(course.location)
-          .fontSize(9)
-          .fontColor(Color.White)
-          .opacity(0.85)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-      }
-    }
-    .padding(4)
-    .width(`${COL_WIDTH_PCT}%`)
-    .height((course.endPeriod - course.startPeriod + 1) * rowHeight - 2)
-    .borderRadius(6)
-    .backgroundColor(course.color)
-    .position({ x: `${LABEL_PCT + (course.weekDay - 1) * COL_WIDTH_PCT}%`, y: (course.startPeriod - 1) * rowHeight })
-    .clip(true)
-  }
-
   build() {
     Column() {
       // 标题栏
       Row() {
         Column({ space: 4 }) {
-          Text(this.viewMode === 'calendar' ?
-            `${this.focusedMonth.getFullYear()}年${MONTHS[this.focusedMonth.getMonth()]}` :
-            '课表'
-          )
+          Text(`${this.focusedMonth.getFullYear()}年${MONTHS[this.focusedMonth.getMonth()]}`)
             .fontSize(28)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
-          if (this.viewMode === 'calendar') {
-            Text(this.isToday(this.selectedDay) ? '今天' :
-              `${this.selectedDay.getMonth() + 1}月${this.selectedDay.getDate()}日`)
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-          }
+          Text(this.isToday(this.selectedDay) ? '今天' :
+            `${this.selectedDay.getMonth() + 1}月${this.selectedDay.getDate()}日`)
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
         }
         .alignItems(HorizontalAlign.Start)
 
         Blank()
 
-        if (this.viewMode === 'calendar') {
-          Button(this.calendarFormat === 'month' ? '周' : '月')
+        // 右上角按钮组 - 统一风格
+        Row({ space: 8 }) {
+          // 周/月切换
+          Text(this.calendarFormat === 'month' ? '周' : '月')
             .fontSize(13)
+            .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.color_blue'))
             .backgroundColor($r('app.color.selected_day_bg'))
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
             .borderRadius(16)
             .onClick(() => {
               this.calendarFormat = this.calendarFormat === 'month' ? 'week' : 'month';
             })
 
-          Button('今')
+          // 跳到今天
+          Text('今')
             .fontSize(13)
-            .fontColor($r('app.color.text_secondary'))
-            .backgroundColor($r('app.color.progress_bg'))
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.color_blue'))
+            .backgroundColor($r('app.color.selected_day_bg'))
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
             .borderRadius(16)
             .onClick(() => this.goToToday())
 
+          // 新建任务
           Button({ type: ButtonType.Circle }) {
-            Text('+').fontSize(18).fontColor($r('app.color.color_blue'))
+            Image($r('sys.media.ohos_ic_public_add'))
+              .width(16).height(16)
+              .fillColor($r('app.color.color_blue'))
           }
-          .width(34).height(34)
+          .width(32).height(32)
           .backgroundColor($r('app.color.selected_day_bg'))
           .onClick(() => {
             const param: Record<string, ESObject> = { "isFixed": true };
             this.navStack.pushPathByName('TaskEdit', param);
           })
-        }
 
-        Button({ type: ButtonType.Circle }) {
-          Text(this.viewMode === 'calendar' ? '📅' : '📋')
-            .fontSize(16)
+          // 跳到课表
+          Text('课表')
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_secondary'))
+            .backgroundColor($r('app.color.progress_bg'))
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+            .borderRadius(16)
+            .onClick(() => {
+              const param = this.buildCourseScheduleParam();
+              if (param) this.navStack.pushPathByName('CourseSchedule', param);
+            })
         }
-        .width(34).height(34)
-        .backgroundColor($r('app.color.progress_bg'))
-        .onClick(() => {
-          this.viewMode = this.viewMode === 'calendar' ? 'schedule' : 'calendar';
-        })
       }
       .width('100%')
       .padding({ left: 20, right: 16, top: this.topRectHeight + 10, bottom: 12 })
 
-      if (this.viewMode === 'schedule') {
-        this.ScheduleGrid()
-      } else {
-        // 日历视图
-        Column({ space: 0 }) {
-          this.WeekDayHeader()
+      // 日历视图
+      Column({ space: 0 }) {
+        this.WeekDayHeader()
 
           // 日历格子区域（Swiper左右滑动切换月份/周）
           Swiper() {
@@ -991,7 +845,6 @@ export struct CalendarPage {
         }
         .width('100%')
         .layoutWeight(1)
-      }
     }
     .width('100%')
     .height('100%')

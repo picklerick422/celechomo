@@ -55,6 +55,13 @@ export struct ScholarPage {
   @State currentSemesterDataLoaded: boolean = false;
   @State hasAnyData: boolean = false;
   @State _currentSemester: Semester | null = null;
+  // 缓存 _currentSemester 的关键属性到独立 @State，绕过 ArkTS 对未装饰类对象引用的检测问题
+  @State currentSemesterName: string = '';
+  @State currentCourseCount: number = 0;
+  @State currentExamCount: number = 0;
+  @State currentTodoCount: number = 0;
+  @State currentIsSpring: boolean = false;
+  @State currentSemesterId: string = '';
   // GPA 显示字段拆分为独立的 @State，避免 ArkTS 对复杂对象响应式追踪不可靠
   @State gpaFivePoint: number = 0;
   @State gpaFourThree: number = 0;
@@ -166,12 +173,35 @@ export struct ScholarPage {
     const sems = AppStorage.get<Semester[]>(AppKeys.SEMESTERS) ?? this.semesters ?? [];
     if (sems.length === 0) {
       this._currentSemester = null;
+      this.currentSemesterName = '';
+      this.currentCourseCount = 0;
+      this.currentExamCount = 0;
+      this.currentTodoCount = 0;
+      this.currentIsSpring = false;
+      this.currentSemesterId = '';
+      this.updateSafeGpaInfo();
       return;
     }
-    const idx = Math.min(Math.max(0, this.semesterIndex), sems.length - 1);
+    // 对 idx 取整：animateTo 动画过程中 semesterIndex 可能是小数（如 0.5）
+    const idx = Math.min(Math.max(0, Math.round(this.semesterIndex)), sems.length - 1);
     this._currentSemester = sems[idx] ?? null;
+    if (this._currentSemester) {
+      this.currentSemesterName = this._currentSemester.name ?? '';
+      this.currentCourseCount = this._currentSemester.courses?.length ?? 0;
+      this.currentExamCount = this._currentSemester.exams?.length ?? 0;
+      this.currentTodoCount = this._currentSemester.todos?.length ?? 0;
+      this.currentIsSpring = this._currentSemester.isSpring ?? false;
+      this.currentSemesterId = this._currentSemester.id ?? '';
+    } else {
+      this.currentSemesterName = '';
+      this.currentCourseCount = 0;
+      this.currentExamCount = 0;
+      this.currentTodoCount = 0;
+      this.currentIsSpring = false;
+      this.currentSemesterId = '';
+    }
     this.updateSafeGpaInfo();
-    console.info(`[ScholarPage] syncCurrentSemester: idx=${idx}, id=${this._currentSemester?.id ?? 'null'}, courses=${this._currentSemester?.courses?.length ?? 0}, gpa=${this.gpaFivePoint}`);
+    console.info(`[ScholarPage] syncCurrentSemester: idx=${idx}, id=${this.currentSemesterId}, courses=${this.currentCourseCount}, exams=${this.currentExamCount}, todos=${this.currentTodoCount}, gpa=${this.gpaFivePoint}`);
   }
 
   /** 解析出学期所属学年（如 "2025-2026"），用于紧凑模式分组 */
@@ -360,6 +390,8 @@ export struct ScholarPage {
         curve: Curve.FastOutSlowIn,
         onFinish: () => {
           this.motionDirection = 0;
+          // 兜底：animateTo 驱动的 @StorageLink 变化可能不触发 @Watch，确保动画结束后同步
+          this.syncCurrentSemester();
         }
       }, () => {
         this.semesterIndex = target;
@@ -369,6 +401,7 @@ export struct ScholarPage {
       this.semesterIndex = target;
       this.semesterDragOffset = 0;
       this.motionDirection = 0;
+      this.syncCurrentSemester();
     }
     // syncCurrentSemester 由 @Watch('onSemesterIndexChanged') 自动调用，
     // 确保 semesterIndex 真正更新后才同步 GPA，避免时序错乱
@@ -506,13 +539,11 @@ export struct ScholarPage {
   }
 
   private getCourseListNavParam(): SemesterIdParam {
-    const sem = this._currentSemester;
-    return { semesterId: sem !== null && sem !== undefined ? sem.id : '' };
+    return { semesterId: this.currentSemesterId };
   }
 
   private getExamListNavParam(): SemesterIdParam {
-    const sem = this._currentSemester;
-    return { semesterId: sem !== null && sem !== undefined ? sem.id : '' };
+    return { semesterId: this.currentSemesterId };
   }
 
   private getCourseScheduleNavParam(sem: Semester, isFirst: boolean): CourseScheduleParam {
@@ -1325,7 +1356,7 @@ export struct ScholarPage {
 
   @Builder
   GradeModule() {
-    if (this._currentSemester === null || this._currentSemester === undefined) {
+    if (this.currentSemesterId.length === 0) {
       Column() { }
     } else {
       // 使用独立卡片（与 CourseModule 保持一致）
@@ -1376,7 +1407,7 @@ export struct ScholarPage {
           .padding({ left: 12, right: 12, bottom: 8 })
 
           // ── 成绩列表 ──
-          if (this._currentSemester!.courses.filter((c: Course) => c.hasGrade).length > 0) {
+          if (this.currentCourseCount > 0 && this._currentSemester !== null && this._currentSemester !== undefined && this._currentSemester.courses.filter((c: Course) => c.hasGrade).length > 0) {
             Divider().strokeWidth(0.5).color($r('app.color.progress_bg')).margin({ left: 12, right: 12 })
 
             Column({ space: 0 }) {
@@ -1400,7 +1431,7 @@ export struct ScholarPage {
                 ForEach(
                   this._currentSemester!.courses.filter((c: Course) => c.hasGrade),
                   (course: Course, index: number) => {
-                    this.CourseListItem(course, this._currentSemester!.id)
+                    this.CourseListItem(course, this.currentSemesterId)
                     if (index < this._currentSemester!.courses.filter((c: Course) => c.hasGrade).length - 1) {
                       Divider()
                         .strokeWidth(0.5)
@@ -1434,7 +1465,7 @@ export struct ScholarPage {
 
   @Builder
   CourseModule() {
-    if (this._currentSemester === null || this._currentSemester === undefined) {
+    if (this.currentSemesterId.length === 0) {
       Column() { }
     } else {
       // 使用独立卡片（不用 RoundRectangleCardWithForehead，避免 clip 问题）
@@ -1457,11 +1488,11 @@ export struct ScholarPage {
         Column({ space: 0 }) {
           // 统计行
           Row() {
-            this.StatCard('📖 课程', this._currentSemester.courses.length.toString(), () => {
+            this.StatCard('📖 课程', this.currentCourseCount.toString(), () => {
               this.navStack.pushPathByName('CourseList', this.getCourseListNavParam());
             })
             this.StatCard('📊 学分', this.gpaTotalCredits.toFixed(1), () => {})
-            this.StatCard('📝 考试', this._currentSemester.exams.length.toString(), () => {
+            this.StatCard('📝 考试', this.currentExamCount.toString(), () => {
               this.navStack.pushPathByName('ExamList', this.getExamListNavParam());
             })
           }
@@ -1470,8 +1501,8 @@ export struct ScholarPage {
 
           // 前后半学期卡片
           Row({ space: 8 }) {
-            this.HalfCourseCard(this._currentSemester!.isSpring ? '春学期' : '秋学期', true, this._currentSemester!)
-            this.HalfCourseCard(this._currentSemester!.isSpring ? '夏学期' : '冬学期', false, this._currentSemester!)
+            this.HalfCourseCard(this.currentIsSpring ? '春学期' : '秋学期', true, this._currentSemester!)
+            this.HalfCourseCard(this.currentIsSpring ? '夏学期' : '冬学期', false, this._currentSemester!)
           }
           .padding({ left: 12, right: 12, bottom: 8 })
 
@@ -1485,7 +1516,7 @@ export struct ScholarPage {
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_secondary'))
               Blank()
-              if (this._currentSemester.courses.length > 0) {
+              if (this.currentCourseCount > 0) {
                 Text('查看全部 →')
                   .fontSize(12)
                   .fontColor($r('app.color.color_blue'))
@@ -1497,11 +1528,11 @@ export struct ScholarPage {
             .width('100%')
             .padding({ left: 12, right: 12, top: 10, bottom: 6 })
 
-            if (this._currentSemester.courses.length > 0) {
+            if (this.currentCourseCount > 0 && this._currentSemester !== null && this._currentSemester !== undefined) {
               Column({ space: 0 }) {
                 ForEach(this._currentSemester.courses, (course: Course, index: number) => {
-                  this.CourseListItem(course, this._currentSemester!.id)
-                  if (index < this._currentSemester!.courses.length - 1) {
+                  this.CourseListItem(course, this.currentSemesterId)
+                  if (index < this.currentCourseCount - 1) {
                     Divider()
                       .strokeWidth(0.5)
                       .color($r('app.color.progress_bg'))
@@ -1680,7 +1711,7 @@ export struct ScholarPage {
 
   @Builder
   TodoModule() {
-    if (this._currentSemester === null || this._currentSemester === undefined) {
+    if (this.currentSemesterId.length === 0) {
       Column() { }
     } else {
       RoundRectangleCardWithForehead({
@@ -1689,13 +1720,13 @@ export struct ScholarPage {
       }) {
         Column({ space: 0 }) {
           Row() {
-            this.StatCard('📋 总计', this._currentSemester.todos.length.toString(), () => {})
-            this.StatCard('⏰ 今日', this._currentSemester.todos.filter((t: Todo) => t.dueTime.getTime() <= Date.now() + 86400000).length.toString(), () => {})
-            this.StatCard('📅 本周', this._currentSemester.todos.filter((t: Todo) => t.dueTime.getTime() <= Date.now() + 7 * 86400000).length.toString(), () => {})
+            this.StatCard('📋 总计', this.currentTodoCount.toString(), () => {})
+            this.StatCard('⏰ 今日', this._currentSemester !== null && this._currentSemester !== undefined ? this._currentSemester.todos.filter((t: Todo) => t.dueTime.getTime() <= Date.now() + 86400000).length.toString() : '0', () => {})
+            this.StatCard('📅 本周', this._currentSemester !== null && this._currentSemester !== undefined ? this._currentSemester.todos.filter((t: Todo) => t.dueTime.getTime() <= Date.now() + 7 * 86400000).length.toString() : '0', () => {})
           }
           .padding({ left: 12, right: 12, top: 12, bottom: 8 })
 
-          if ((this._currentSemester?.todos?.length ?? 0) > 0) {
+          if (this.currentTodoCount > 0 && this._currentSemester !== null && this._currentSemester !== undefined) {
             Scroll() {
               Row({ space: 10 }) {
                 ForEach(this._currentSemester!.todos.sort((a: Todo, b: Todo) => a.dueTime.getTime() - b.dueTime.getTime()).slice(0, 6), (todo: Todo) => {
@@ -1759,7 +1790,7 @@ export struct ScholarPage {
 
   @Builder
   PracticeModule() {
-    if (this._currentSemester === null || this._currentSemester === undefined) {
+    if (this.currentSemesterId.length === 0) {
       Column() { }
     } else {
       RoundRectangleCardWithForehead({
@@ -1960,7 +1991,7 @@ export struct ScholarPage {
           Scroll() {
             Column({ space: 16 }) {
               // 错误提示
-              if (this.errorMessage.length > 0 && (this._currentSemester === null || this._currentSemester === undefined || (this._currentSemester !== null && this._currentSemester !== undefined && (this._currentSemester.courses?.length ?? 0) === 0))) {
+              if (this.errorMessage.length > 0 && (this.currentSemesterId.length === 0 || this.currentCourseCount === 0)) {
                 Column({ space: 12 }) {
                   Text(this.errorMessage)
                     .fontSize(14)
@@ -1981,15 +2012,15 @@ export struct ScholarPage {
               this.StudentInfoCard()
 
               // 当前学期数据卡片
-              if (this._currentSemester !== null && this._currentSemester !== undefined) {
+              if (this.currentSemesterId.length > 0) {
                 // 显示学期信息（标题左对齐，简述信息紧跟其右）
                 Row({ space: 10 }) {
-                  Text(this._currentSemester.name)
+                  Text(this.currentSemesterName)
                     .fontSize(28)
                     .fontColor($r('app.color.text_primary'))
                     .fontWeight(FontWeight.Bold)
 
-                  Text(`课程 ${this._currentSemester!.courses.length} · 考试 ${this._currentSemester!.exams.length} · 作业 ${this._currentSemester!.todos.length}`)
+                  Text(`课程 ${this.currentCourseCount} · 考试 ${this.currentExamCount} · 作业 ${this.currentTodoCount}`)
                     .fontSize(11)
                     .fontColor($r('app.color.text_tertiary'))
                     .layoutWeight(1)
@@ -1997,7 +2028,7 @@ export struct ScholarPage {
                     .textOverflow({ overflow: TextOverflow.Ellipsis })
                     .padding({ bottom: 4 })
 
-                  if (this._currentSemester !== null && this._currentSemester !== undefined && (this._currentSemester.courses?.length ?? 0) === 0 && !this.isRefreshing) {
+                  if (this.currentCourseCount === 0 && !this.isRefreshing) {
                     Text('点击刷新')
                       .fontSize(13)
                       .fontColor($r('app.color.color_blue'))
@@ -2019,7 +2050,7 @@ export struct ScholarPage {
               }
 
               // 空数据提示
-              if (this._currentSemester !== null && this._currentSemester !== undefined && (this._currentSemester.courses?.length ?? 0) === 0 && !this.isRefreshing && this.errorMessage.length === 0) {
+              if (this.currentSemesterId.length > 0 && this.currentCourseCount === 0 && !this.isRefreshing && this.errorMessage.length === 0) {
                 Column({ space: 12 }) {
                   Text('📭')
                     .fontSize(40)

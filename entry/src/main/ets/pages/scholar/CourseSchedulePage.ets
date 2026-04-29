@@ -25,6 +25,7 @@ interface ScheduleCourseItemWithTeacher {
 @Component
 export struct CourseSchedulePage {
   @StorageLink(AppKeys.SEMESTERS) @Watch('onSemestersChanged') semesters: Semester[] = [];
+  @StorageProp('topRectHeight') topRectHeight: number = 0;
   @State semesterId: string = '';
   @State isFirstHalf: boolean = true;
   private pathStack: NavPathStack | null = null;
@@ -141,6 +142,14 @@ export struct CourseSchedulePage {
     }
     if (minutes < PERIOD_TIMES[0][0]) return 0;
     return PERIOD_COUNT * ROW_HEIGHT_COURSE;
+  }
+
+  /** 当前时间标签（HH:MM） */
+  private get currentTimeLabel(): string {
+    const now = new Date();
+    const h = now.getHours().toString().padStart(2, '0');
+    const m = now.getMinutes().toString().padStart(2, '0');
+    return `${h}:${m}`;
   }
 
   private buildScheduleItems(courses: Course[]): ScheduleCourseItemWithTeacher[] {
@@ -340,88 +349,125 @@ export struct CourseSchedulePage {
     NavDestination() {
       Column() {
         // ===== 导航栏 =====
-        Row() {
-          Button({ type: ButtonType.Normal }) {
-            Image($r('sys.media.ohos_ic_public_arrow_left'))
-              .width(22).height(22).fillColor($r('app.color.color_blue'))
-          }
-          .backgroundColor(Color.Transparent).padding(8)
-          .onClick(() => this.pathStack?.pop())
-
-          Column({ space: 2 }) {
-            Text('课表')
-              .fontSize(17).fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-            if ((this.currentWeekLabel ?? '').length > 0) {
-              Text(this.currentWeekLabel)
-                .fontSize(11)
-                .fontColor($r('app.color.text_tertiary'))
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Column() {
+          Row({ space: 4 }) {
+            Button({ type: ButtonType.Circle }) {
+              Image($r('sys.media.ohos_ic_public_arrow_left'))
+                .width(20).height(20)
+                .fillColor($r('app.color.color_blue'))
             }
-          }
-          .layoutWeight(1)
+            .width(36).height(36)
+            .backgroundColor(Color.Transparent)
+            .onClick(() => this.pathStack?.pop())
 
-          Row().width(46)
-        }
-        .width('100%')
-        .padding({ left: 8, right: 8, top: 8, bottom: 8 })
-        .backgroundColor($r('app.color.card_background'))
-
-        // ===== 前/后半学期切换 =====
-        Row({ space: 8 }) {
-          Text(this.getHalfSemesterLabels()[0])
-            .fontSize(13)
-            .fontColor(this.isFirstHalf ? Color.White : $r('app.color.text_secondary'))
-            .fontWeight(this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
-            .padding({ left: 16, right: 16, top: 6, bottom: 6 })
-            .borderRadius(16)
-            .backgroundColor(this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.progress_bg'))
-            .onClick(() => { this.isFirstHalf = true; })
-
-          Text(this.getHalfSemesterLabels()[1])
-            .fontSize(13)
-            .fontColor(!this.isFirstHalf ? Color.White : $r('app.color.text_secondary'))
-            .fontWeight(!this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
-            .padding({ left: 16, right: 16, top: 6, bottom: 6 })
-            .borderRadius(16)
-            .backgroundColor(!this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.progress_bg'))
-            .onClick(() => { this.isFirstHalf = false; })
-        }
-        .padding({ left: 16, top: 10, bottom: 6 })
-        .width('100%')
-
-        // ===== 表头 =====
-        Row() {
-          Text('')
-            .width(`${LABEL_PCT_COURSE}%`)
-            .textAlign(TextAlign.Center)
-
-          ForEach(WEEKDAYS, (day: string, idx: number) => {
             Column({ space: 2 }) {
-              Text(day)
-                .fontSize(13)
-                .fontColor((idx + 1) === this.todayWeekDay ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
-                .fontWeight((idx + 1) === this.todayWeekDay ? FontWeight.Bold : FontWeight.Regular)
-              if ((idx + 1) === this.todayWeekDay) {
-                Row()
-                  .width(4).height(4).borderRadius(2)
-                  .backgroundColor($r('app.color.color_blue'))
+              Text('课表')
+                .fontSize(18).fontWeight(FontWeight.Bold)
+                .fontColor($r('app.color.text_primary'))
+              if ((this.currentWeekLabel ?? '').length > 0) {
+                Text(this.currentWeekLabel)
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
               }
             }
+            .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
-            .height(36)
-            .justifyContent(FlexAlign.Center)
-          }, (day: string, idx: number) => `${day}-${idx}`)
+          }
+          .width('100%')
+          .padding({ left: 8, right: 16, top: 8, bottom: 10 })
+
+          Divider().strokeWidth(0.5).color($r('app.color.separator'))
         }
         .width('100%')
-        .padding({ left: 8, right: 8, bottom: 4 })
+        .padding({ top: this.topRectHeight })
+        .backgroundColor($r('app.color.app_background'))
+
+        // ===== 前/后半学期切换（分段控件风格）=====
+        Column() {
+          Row() {
+            Text(this.getHalfSemesterLabels()[0])
+              .fontSize(13)
+              .fontColor(this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
+              .fontWeight(this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
+              .textAlign(TextAlign.Center)
+              .layoutWeight(1)
+              .height(30)
+              .borderRadius(15)
+              .backgroundColor(this.isFirstHalf ? $r('app.color.card_background') : Color.Transparent)
+              .shadow(this.isFirstHalf ? {
+                radius: 4,
+                color: '#1A000000',
+                offsetX: 0,
+                offsetY: 1
+              } : { radius: 0, color: Color.Transparent, offsetX: 0, offsetY: 0 })
+              .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+              .onClick(() => { this.isFirstHalf = true; })
+
+            Text(this.getHalfSemesterLabels()[1])
+              .fontSize(13)
+              .fontColor(!this.isFirstHalf ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
+              .fontWeight(!this.isFirstHalf ? FontWeight.Medium : FontWeight.Regular)
+              .textAlign(TextAlign.Center)
+              .layoutWeight(1)
+              .height(30)
+              .borderRadius(15)
+              .backgroundColor(!this.isFirstHalf ? $r('app.color.card_background') : Color.Transparent)
+              .shadow(!this.isFirstHalf ? {
+                radius: 4,
+                color: '#1A000000',
+                offsetX: 0,
+                offsetY: 1
+              } : { radius: 0, color: Color.Transparent, offsetX: 0, offsetY: 0 })
+              .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+              .onClick(() => { this.isFirstHalf = false; })
+          }
+          .width('100%')
+          .padding(2)
+          .borderRadius(17)
+          .backgroundColor($r('app.color.progress_bg'))
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 12, bottom: 8 })
+
+        // ===== 表头 =====
+        Column() {
+          Row() {
+            Text('')
+              .width(`${LABEL_PCT_COURSE}%`)
+              .textAlign(TextAlign.Center)
+
+            ForEach(WEEKDAYS, (day: string, idx: number) => {
+              Column({ space: 4 }) {
+                Text(day)
+                  .fontSize(13)
+                  .fontColor((idx + 1) === this.todayWeekDay ? $r('app.color.color_blue') : $r('app.color.text_secondary'))
+                  .fontWeight((idx + 1) === this.todayWeekDay ? FontWeight.Bold : FontWeight.Medium)
+                if ((idx + 1) === this.todayWeekDay) {
+                  Row()
+                    .width(20).height(2).borderRadius(1)
+                    .backgroundColor($r('app.color.color_blue'))
+                }
+              }
+              .layoutWeight(1)
+              .height(40)
+              .justifyContent(FlexAlign.Center)
+            }, (day: string, idx: number) => `${day}-${idx}`)
+          }
+          .width('100%')
+          .padding({ left: 8, right: 8 })
+
+          Divider().strokeWidth(0.5).color($r('app.color.separator'))
+        }
+        .width('100%')
 
         // ===== 课表主体或空状态 =====
         if (this.getScheduleCourses().length === 0) {
-          Column({ space: 8 }) {
+          Column({ space: 12 }) {
             Text('📖')
-              .fontSize(48)
+              .fontSize(56)
+              .opacity(0.6)
             Text('暂无课程')
               .fontSize(16)
               .fontColor($r('app.color.text_secondary'))
@@ -433,6 +479,7 @@ export struct CourseSchedulePage {
           .width('100%')
           .layoutWeight(1)
           .justifyContent(FlexAlign.Center)
+          .padding({ top: 24 })
         } else {
           Scroll() {
             Stack({ alignContent: Alignment.TopStart }) {
@@ -440,26 +487,35 @@ export struct CourseSchedulePage {
               Column() {
                 ForEach(PERIOD_LABELS_COURSE, (label: string, idx: number) => {
                   Row() {
-                    Column() {
+                    Column({ space: 2 }) {
                       Text(label)
-                        .fontSize(11)
+                        .fontSize((idx + 1) === this.currentPeriodIndex ? 13 : 11)
                         .fontColor((idx + 1) === this.currentPeriodIndex ? $r('app.color.color_blue') : $r('app.color.text_tertiary'))
-                        .fontWeight((idx + 1) === this.currentPeriodIndex ? FontWeight.Medium : FontWeight.Regular)
+                        .fontWeight((idx + 1) === this.currentPeriodIndex ? FontWeight.Bold : FontWeight.Regular)
                         .textAlign(TextAlign.Center)
                       Text(this.formatPeriodTime(idx))
-                        .fontSize(9)
+                        .fontSize(10)
+                        .fontWeight((idx + 1) === this.currentPeriodIndex ? FontWeight.Medium : FontWeight.Regular)
                         .fontColor((idx + 1) === this.currentPeriodIndex ? $r('app.color.color_blue') : $r('app.color.text_tertiary'))
                         .textAlign(TextAlign.Center)
                     }
                     .width(`${LABEL_PCT_COURSE}%`)
                     .height(ROW_HEIGHT_COURSE)
                     .justifyContent(FlexAlign.Center)
+                    .border({
+                      width: { right: 0.5 },
+                      color: $r('app.color.separator'),
+                      style: BorderStyle.Solid
+                    })
 
                     ForEach(WEEKDAYS, (_: string, widx: number) => {
                       Row()
                         .layoutWeight(1)
                         .height(ROW_HEIGHT_COURSE)
-                        .backgroundColor((widx + 1) === this.todayWeekDay ? $r('app.color.selected_day_bg') : Color.Transparent)
+                        .backgroundColor(
+                          (widx + 1) === this.todayWeekDay ? $r('app.color.selected_day_bg') :
+                          (idx % 2 === 0 ? $r('app.color.card_background') : $r('app.color.app_background'))
+                        )
                         .border({
                           width: { left: 0.5, bottom: 0.5 },
                           color: $r('app.color.separator'),
@@ -474,25 +530,35 @@ export struct CourseSchedulePage {
 
               // --- 当前时间指示线 ---
               if (this.currentPeriodIndex > 0) {
-                Row() {
-                  Row()
-                    .width(`${LABEL_PCT_COURSE}%`)
-                    .height('100%')
-                  Row()
-                    .layoutWeight(1)
-                    .height('100%')
-                    .backgroundColor('#1AFF3B30')
-                }
-                .width('100%')
-                .height(2)
-                .backgroundColor('#FF3B30')
-                .position({ x: 0, y: this.currentTimeLineY - 1 })
-                .zIndex(5)
-
+                // 渐变红线（从节次列右边缘起，向右淡出至 #FF3B30）
                 Row()
-                  .width(6).height(6).borderRadius(3)
+                  .width(`${100 - LABEL_PCT_COURSE}%`)
+                  .height(2)
+                  .linearGradient({
+                    angle: 90,
+                    colors: [['#00FF3B30', 0.0], ['#FF3B30', 0.15], ['#FF3B30', 1.0]]
+                  })
+                  .position({ x: `${LABEL_PCT_COURSE}%`, y: this.currentTimeLineY - 1 })
+                  .zIndex(5)
+
+                // 时间标签（HH:MM）
+                Text(this.currentTimeLabel)
+                  .fontSize(10)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor('#FF3B30')
+                  .backgroundColor($r('app.color.card_background'))
+                  .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+                  .borderRadius(6)
+                  .border({ width: 1, color: '#FF3B30' })
+                  .position({ x: 4, y: this.currentTimeLineY - 8 })
+                  .zIndex(7)
+
+                // 红点
+                Row()
+                  .width(8).height(8).borderRadius(4)
                   .backgroundColor('#FF3B30')
-                  .position({ x: `${LABEL_PCT_COURSE - 1.5}%`, y: this.currentTimeLineY - 3 })
+                  .border({ width: 1.5, color: $r('app.color.card_background') })
+                  .position({ x: `${LABEL_PCT_COURSE - 2}%`, y: this.currentTimeLineY - 4 })
                   .zIndex(6)
               }
 
@@ -534,11 +600,11 @@ export struct CourseSchedulePage {
 
   @Builder
   CourseBlock(course: ScheduleCourseItemWithTeacher) {
-    Column({ space: 2 }) {
+    Column({ space: 3 }) {
       Text(course.name)
-        .fontSize(11)
+        .fontSize(12)
         .fontColor(Color.White)
-        .fontWeight(FontWeight.Medium)
+        .fontWeight(600)
         .maxLines(3)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
@@ -546,20 +612,21 @@ export struct CourseSchedulePage {
 
       if (course.location && course.location.length > 0) {
         Text(course.location)
-          .fontSize(9)
+          .fontSize(10)
           .fontColor(Color.White)
-          .opacity(0.9)
+          .opacity(0.85)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
           .textAlign(TextAlign.Center)
       }
 
-      if (course.teacher && course.teacher.length > 0) {
+      // 老师姓名仅在课程块高度足够时显示（>=2 节）
+      if (course.teacher && course.teacher.length > 0 && (course.endPeriod - course.startPeriod) >= 1) {
         Text(course.teacher)
-          .fontSize(9)
+          .fontSize(10)
           .fontColor(Color.White)
-          .opacity(0.75)
+          .opacity(0.7)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
@@ -568,15 +635,18 @@ export struct CourseSchedulePage {
     }
     .width(`${COL_WIDTH_PCT_COURSE - 1.2}%`)
     .height((course.endPeriod - course.startPeriod + 1) * ROW_HEIGHT_COURSE - 4)
-    .borderRadius(8)
-    .backgroundColor(course.color)
-    .padding(4)
+    .borderRadius(10)
+    .linearGradient({
+      angle: 180,
+      colors: [[course.color, 0.0], [course.color + 'E0', 1.0]]
+    })
+    .padding(5)
     .clip(true)
     .shadow({
-      radius: 6,
-      color: course.color + '66',
+      radius: 8,
+      color: course.color + '40',
       offsetX: 0,
-      offsetY: 2
+      offsetY: 3
     })
     .position({
       x: `${LABEL_PCT_COURSE + (course.weekDay - 1) * COL_WIDTH_PCT_COURSE + 0.6}%`,

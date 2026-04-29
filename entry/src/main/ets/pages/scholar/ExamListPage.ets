@@ -8,16 +8,59 @@ import { AppKeys } from '../Index';
 export struct ExamListPage {
   @StorageLink(AppKeys.SEMESTERS) semesters: Semester[] = [];
   @State semesterId: string = '';
+  @State exams: Exam[] = [];
+  @State semesterName: string = '';
   private pathStack: NavPathStack | null = null;
 
-  private get currentSemester(): Semester | null {
-    return this.semesters.find(s => s.id === this.semesterId) ?? null;
+  private formatExamTime(exam: Exam): string {
+    try {
+      const d = exam.startTime;
+      const end = exam.endTime;
+      if (!d || !end) return '时间待定';
+      return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')} - ${end.getHours().toString().padStart(2, '0')}:${end.getMinutes().toString().padStart(2, '0')}`;
+    } catch {
+      return '时间待定';
+    }
   }
 
-  private formatExamTime(exam: Exam): string {
-    const d = exam.startTime;
-    const end = exam.endTime;
-    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')} - ${end.getHours().toString().padStart(2, '0')}:${end.getMinutes().toString().padStart(2, '0')}`;
+  /** 在 onReady 中一次性解析数据，避免 build() 中多次调用 getter 因 @StorageLink 数组替换而拿到 null */
+  private resolveExams(): void {
+    const targetId = String(this.semesterId ?? '').trim();
+    if (!targetId) {
+      this.exams = [];
+      this.semesterName = '';
+      return;
+    }
+    const arr = this.semesters ?? [];
+
+    // 方法1: map+indexOf（绕过 find() 在代理数组上的潜在问题）
+    const ids = arr.map(s => String(s?.id ?? '').trim());
+    const idx = ids.indexOf(targetId);
+    let sem: Semester | null = null;
+    if (idx >= 0) {
+      sem = arr[idx] as Semester;
+    }
+
+    // 方法2: for 循环兜底
+    if (!sem) {
+      for (let i = 0; i < arr.length; i++) {
+        const s = arr[i];
+        if (String(s?.id ?? '').trim() === targetId) {
+          sem = s as Semester;
+          break;
+        }
+      }
+    }
+
+    if (sem) {
+      this.exams = sem.exams ?? [];
+      this.semesterName = sem.name ?? '';
+      console.info(`[ExamListPage] resolved exams: sem=${sem.id}, exams=${this.exams.length}`);
+    } else {
+      this.exams = [];
+      this.semesterName = '';
+      console.warn(`[ExamListPage] resolveExams FAILED: targetId=${targetId}, ids=[${ids.join(',')}]`);
+    }
   }
 
   build() {
@@ -50,10 +93,10 @@ export struct ExamListPage {
         .padding({ left: 16, right: 16, top: 10, bottom: 10 })
         .backgroundColor('#FFEBEE')
 
-        if (this.currentSemester !== null) {
+        if (this.exams.length > 0) {
           Scroll() {
             Column({ space: 8 }) {
-              ForEach(this.currentSemester.exams, (exam: Exam) => {
+              ForEach(this.exams, (exam: Exam) => {
                 Column({ space: 10 }) {
                   Row({ space: 10 }) {
                     Row()
@@ -61,7 +104,7 @@ export struct ExamListPage {
                       .borderRadius(exam.type === 'midterm' ? 6 : 2)
                       .backgroundColor('#F48FB1')
 
-                    Text(exam.courseName)
+                    Text(exam.courseName ?? '')
                       .fontSize(16).fontWeight(FontWeight.Medium)
                       .fontColor($r('app.color.text_primary'))
                       .layoutWeight(1)
@@ -76,14 +119,14 @@ export struct ExamListPage {
                     .fontSize(14).fontColor($r('app.color.text_secondary'))
 
                   Row({ space: 20 }) {
-                    if (exam.location.length > 0) {
+                    if ((exam.location ?? '').length > 0) {
                       Row({ space: 4 }) {
                         Image($r('sys.media.ohos_ic_public_location'))
                           .width(14).height(14).fillColor($r('app.color.text_tertiary'))
-                        Text(exam.location).fontSize(13).fontColor($r('app.color.text_tertiary'))
+                        Text(exam.location ?? '').fontSize(13).fontColor($r('app.color.text_tertiary'))
                       }
                     }
-                    if (exam.seatNo.length > 0) {
+                    if ((exam.seatNo ?? '').length > 0) {
                       Text(`座位号: ${exam.seatNo}`)
                         .fontSize(13).fontColor($r('app.color.text_tertiary'))
                     }
@@ -92,13 +135,28 @@ export struct ExamListPage {
                 .width('100%').padding(16)
                 .backgroundColor($r('app.color.card_background')).borderRadius(12)
                 .alignItems(HorizontalAlign.Start)
-              }, (e: Exam) => e.uid)
+              }, (e: Exam) => e.uid ?? String(e.courseName))
 
               Blank().height(80)
             }
             .padding(16)
           }
           .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).layoutWeight(1)
+        } else {
+          Column({ space: 8 }) {
+            Text('📋')
+              .fontSize(48)
+            Text('暂无考试')
+              .fontSize(16)
+              .fontColor($r('app.color.text_secondary'))
+              .fontWeight(FontWeight.Medium)
+            Text(this.semesterName ? `${this.semesterName} 暂无考试安排` : '请稍后，正在加载考试数据...')
+              .fontSize(13)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .justifyContent(FlexAlign.Center)
         }
       }
       .width('100%').height('100%').backgroundColor($r('app.color.app_background'))
@@ -108,6 +166,7 @@ export struct ExamListPage {
       this.pathStack = ctx.pathStack;
       const params = ctx.pathInfo.param as Record<string, string>;
       this.semesterId = params?.['semesterId'] ?? '';
+      this.resolveExams();
     })
   }
 }
