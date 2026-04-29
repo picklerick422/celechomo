@@ -45,6 +45,7 @@ export const AppKeys: Record<string, string> = {
   "REST_DURATION": 'restDuration',
   "ALLOW_TIMES": 'allowTimes',
   "THEME_MODE": 'themeMode',
+  "TAB_BAR_STYLE": 'tabBarStyle',
   "LAST_UPDATE": 'lastUpdate',
   "PUSH_GRADE": 'pushGrade',
   "SYNC_CALENDAR": 'syncCalendar',
@@ -58,6 +59,7 @@ export const AppKeys: Record<string, string> = {
 };
 
 export type ThemeMode = 'light' | 'dark' | 'system';
+export type TabBarStyle = 'glow' | 'pill';
 
 const CURRENT_VERSION = '1.2.0';
 
@@ -107,13 +109,23 @@ struct Index {
   @StorageLink(AppKeys.IS_LOGGED_IN) isLoggedIn: boolean = false;
   @StorageLink(AppKeys.LATEST_VERSION) latestVersion: string = '';
   @StorageLink(AppKeys.APP_VERSION) appVersion: string = CURRENT_VERSION;
+  @StorageLink(AppKeys.TAB_BAR_STYLE) tabBarStyle: string = 'glow';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
+
+  // 胶囊样式底栏拖拽状态
+  @State pillTabDragOffset: number = 0;
+  @State pillTabMotionDirection: number = 0; // -1=向左 0=静止 1=向右
+  @State pillTabPressed: boolean = false;
+  @State pillContainerWidth: number = 360;
 
   private storageService: StorageService | null = null;
   private tabController: TabsController = new TabsController();
   private hdsTabController: HdsTabsController = new HdsTabsController();
   private refreshTimer: number = -1;
+  private pillDragMotionTimer: number = -1;
+  private readonly pillSidePadding: number = 16; // 左右内边距
+  private readonly tabCount: number = 5;
 
   /** 初始化 AppStorage 默认值 */
   private initAppStorage(): void {
@@ -129,6 +141,7 @@ struct Index {
     AppStorage.setOrCreate(AppKeys.REST_DURATION, 10);
     AppStorage.setOrCreate(AppKeys.ALLOW_TIMES, [] as TimeRange[]);
     AppStorage.setOrCreate(AppKeys.THEME_MODE, 'system');
+    AppStorage.setOrCreate(AppKeys.TAB_BAR_STYLE, 'glow');
     AppStorage.setOrCreate(AppKeys.LAST_UPDATE, 0);
     AppStorage.setOrCreate(AppKeys.PUSH_GRADE, false);
     AppStorage.setOrCreate(AppKeys.SYNC_CALENDAR, false);
@@ -178,7 +191,8 @@ struct Index {
       this.storageService.loadString('student_info', ''),
       this.storageService.loadBoolean('isInitialFetchDone', false),
       this.storageService.loadNumber('semester_index', 0),
-      this.storageService.loadThemeMode()
+      this.storageService.loadThemeMode(),
+      this.storageService.loadTabBarStyle()
     ]);
 
     const tasks = results[0];
@@ -196,6 +210,7 @@ struct Index {
     const isInitialFetchDone = results[12] as boolean;
     const semesterIndex = results[13] as number;
     const themeMode = results[14] as string;
+    const tabBarStyle = results[15] as string;
 
     AppStorage.set(AppKeys.TASKS, tasks);
     AppStorage.set(AppKeys.SEMESTERS, semesters);
@@ -212,6 +227,7 @@ struct Index {
     AppStorage.set(AppKeys.IS_INITIAL_FETCH_DONE, isInitialFetchDone);
     AppStorage.set(AppKeys.CURRENT_SEMESTER_INDEX, semesterIndex);
     AppStorage.set(AppKeys.THEME_MODE, themeMode);
+    AppStorage.set(AppKeys.TAB_BAR_STYLE, tabBarStyle);
     if (cookies.length > 0) setCookies(cookies);
     // 恢复学号到 NetworkService（避免重启后 savedStudentId 为空）
     if (username.length > 0 && username !== 'web_user') {
@@ -352,6 +368,62 @@ struct Index {
     return labels[index] ?? '';
   }
 
+  // ======= 胶囊样式底栏 - 辅助方法 =======
+
+  private getPillTabEmoji(index: number): string {
+    const emojis = ['⏰', '📅', '📝', '🎓', '⚙️'];
+    return emojis[index] ?? '⏰';
+  }
+
+  /** 单个 tab 单元格宽度（按容器宽度均分 5 份） */
+  private pillCellWidth(): number {
+    const inner = this.pillContainerWidth - this.pillSidePadding * 2;
+    if (inner <= 0) return 64;
+    return inner / this.tabCount;
+  }
+
+  /** 指示器在 Stack 内的水平偏移量（保留 2px 内边距，叠加拖拽偏移） */
+  private pillIndicatorOffsetX(): number {
+    return 2 + this.currentIndex * this.pillCellWidth() + this.pillTabDragOffset;
+  }
+
+  /** 切换到指定 tab：动画 currentIndex 与 dragOffset，保持 Tabs 内容同步 */
+  private snapToTab(idx: number): void {
+    const target = Math.max(0, Math.min(this.tabCount - 1, idx));
+    const isSame = target === this.currentIndex;
+
+    if (target > this.currentIndex) {
+      this.pillTabMotionDirection = 1;
+    } else if (target < this.currentIndex) {
+      this.pillTabMotionDirection = -1;
+    } else if (Math.abs(this.pillTabDragOffset) > 0.5) {
+      this.pillTabMotionDirection = this.pillTabDragOffset > 0 ? -1 : 1;
+    } else {
+      this.pillTabMotionDirection = 0;
+    }
+
+    try {
+      this.getUIContext().animateTo({
+        duration: 320,
+        curve: Curve.FastOutSlowIn,
+        onFinish: () => {
+          this.pillTabMotionDirection = 0;
+        }
+      }, () => {
+        this.currentIndex = target;
+        this.pillTabDragOffset = 0;
+      });
+    } catch {
+      this.currentIndex = target;
+      this.pillTabDragOffset = 0;
+      this.pillTabMotionDirection = 0;
+    }
+
+    if (!isSame) {
+      try { this.tabController.changeIndex(target); } catch {}
+    }
+  }
+
   // ======= Tab 构建块 =======
 
   /**
@@ -438,90 +510,273 @@ struct Index {
     .justifyContent(FlexAlign.Center)
   }
 
-  build() {
-    HdsNavigation(this.navStack) {
-      HdsTabs({ controller: this.hdsTabController }) {
-        TabContent() {
-          FlowPage({ navStack: this.navStack })
-        }
-        .tabBar(new BottomTabBarStyle({
-          normal: this.getTabNormalIcon(0),
-          selected: this.getTabSelectedIcon(0)
-        }, this.getTabLabel(0))
-          .labelStyle({
-            font: { size: 10, weight: FontWeight.Medium },
-            unselectedColor: '#8E8E93',
-            selectedColor: this.getTabColor(0)
-          })
-          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+  // ======= 胶囊样式底栏 =======
+  /**
+   * 4 层 Stack 结构（与 SemesterSelector 一致）：
+   * 1) 底层胶囊背景
+   * 2) 指示器（主题色 + 粒子）：可拖拽，使指示器跟手滑动
+   * 3) 灰色文字+图标层：始终位于胶囊原位，承接点击切换
+   * 4) 白色文字+图标层：裁剪到指示器范围内
+   */
+  @Builder
+  PillTabBar() {
+    Stack({ alignContent: Alignment.Start }) {
+      // 1. 底层胶囊背景
+      Row()
+        .width(this.tabCount * this.pillCellWidth())
+        .height(60)
+        .borderRadius(30)
+        .backgroundColor($r('app.color.tile_bg'))
+        .border({ width: 0.5, color: '#10000000' })
+        .shadow({
+          radius: 16,
+          color: '#1A000000',
+          offsetX: 0,
+          offsetY: 6
+        })
 
-        TabContent() {
-          CalendarPage({ navStack: this.navStack })
-        }
-        .tabBar(new BottomTabBarStyle({
-          normal: this.getTabNormalIcon(1),
-          selected: this.getTabSelectedIcon(1)
-        }, this.getTabLabel(1))
-          .labelStyle({
-            font: { size: 10, weight: FontWeight.Medium },
-            unselectedColor: '#8E8E93',
-            selectedColor: this.getTabColor(1)
-          })
-          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+      // 2. 指示器
+      Stack() {
+        Row()
+          .width('100%')
+          .height('100%')
+          .backgroundColor($r('app.color.color_blue'))
 
-        TabContent() {
-          TaskPage({ navPathStack: this.navStack })
-        }
-        .tabBar(new BottomTabBarStyle({
-          normal: this.getTabNormalIcon(2),
-          selected: this.getTabSelectedIcon(2)
-        }, this.getTabLabel(2))
-          .labelStyle({
-            font: { size: 10, weight: FontWeight.Medium },
-            unselectedColor: '#8E8E93',
-            selectedColor: this.getTabColor(2)
-          })
-          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
-
-        TabContent() {
-          ScholarPage({ navStack: this.navStack })
-        }
-        .tabBar(new BottomTabBarStyle({
-          normal: this.getTabNormalIcon(3),
-          selected: this.getTabSelectedIcon(3)
-        }, this.getTabLabel(3))
-          .labelStyle({
-            font: { size: 10, weight: FontWeight.Medium },
-            unselectedColor: '#8E8E93',
-            selectedColor: this.getTabColor(3)
-          })
-          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
-
-        TabContent() {
-          OptionPage({ navStack: this.navStack })
-        }
-        .tabBar(new BottomTabBarStyle({
-          normal: this.getTabNormalIcon(4),
-          selected: this.getTabSelectedIcon(4)
-        }, this.getTabLabel(4))
-          .labelStyle({
-            font: { size: 10, weight: FontWeight.Medium },
-            unselectedColor: '#8E8E93',
-            selectedColor: this.getTabColor(4)
-          })
-          .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+        // 粒子层（按下时小范围闪烁，滑动时按方向喷射）
+        Particle({
+          particles: [
+            {
+              // 0 号：环境闪烁
+              emitter: {
+                particle: {
+                  type: ParticleType.POINT,
+                  config: { radius: 1.0 },
+                  count: -1,
+                  lifetime: 800,
+                  lifetimeRange: 200
+                },
+                emitRate: 0,
+                shape: ParticleEmitterShape.RECTANGLE,
+                position: [0, 0],
+                size: ['100%', '100%']
+              },
+              color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
+              opacity: {
+                range: [0.0, 1.0],
+                updater: {
+                  type: ParticleUpdater.CURVE,
+                  config: [
+                    { from: 0.0, to: 1.0, startMillis: 0, endMillis: 200 },
+                    { from: 1.0, to: 0.0, startMillis: 200, endMillis: 800 }
+                  ]
+                }
+              },
+              scale: { range: [0.4, 1.4] },
+              velocity: { speed: [3, 10], angle: [0, 360] }
+            },
+            {
+              // 1 号：向右喷射
+              emitter: {
+                particle: {
+                  type: ParticleType.POINT,
+                  config: { radius: 1.3 },
+                  count: -1,
+                  lifetime: 500,
+                  lifetimeRange: 200
+                },
+                emitRate: 0,
+                shape: ParticleEmitterShape.RECTANGLE,
+                position: [0, 0],
+                size: ['100%', '100%']
+              },
+              color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
+              opacity: {
+                range: [0.0, 1.0],
+                updater: {
+                  type: ParticleUpdater.CURVE,
+                  config: [
+                    { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
+                    { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
+                  ]
+                }
+              },
+              scale: { range: [0.4, 1.6] },
+              velocity: { speed: [60, 120], angle: [-25, 25] }
+            },
+            {
+              // 2 号：向左喷射
+              emitter: {
+                particle: {
+                  type: ParticleType.POINT,
+                  config: { radius: 1.3 },
+                  count: -1,
+                  lifetime: 500,
+                  lifetimeRange: 200
+                },
+                emitRate: 0,
+                shape: ParticleEmitterShape.RECTANGLE,
+                position: [0, 0],
+                size: ['100%', '100%']
+              },
+              color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
+              opacity: {
+                range: [0.0, 1.0],
+                updater: {
+                  type: ParticleUpdater.CURVE,
+                  config: [
+                    { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
+                    { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
+                  ]
+                }
+              },
+              scale: { range: [0.4, 1.6] },
+              velocity: { speed: [60, 120], angle: [155, 205] }
+            }
+          ]
+        })
+          .width('100%')
+          .height('100%')
+          .hitTestBehavior(HitTestMode.None)
+          .emitter([
+            { index: 0, emitRate: (this.pillTabPressed && this.pillTabMotionDirection === 0) ? 25 : 0 },
+            { index: 1, emitRate: this.pillTabMotionDirection > 0 ? 80 : 0 },
+            { index: 2, emitRate: this.pillTabMotionDirection < 0 ? 80 : 0 }
+          ])
       }
-      .barOverlap(true)
-      .vertical(false)
-      .barPosition(BarPosition.End)
-      .barFloatingStyle({
-        barBottomMargin: 28,
-        systemMaterialEffect: {
-          materialType: hdsMaterial.MaterialType.ADAPTIVE,
-          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+      .width(this.pillCellWidth() - 4)
+      .height(54)
+      .borderRadius(27)
+      .clip(true)
+      .shadow({
+        radius: 10,
+        color: '#40007AFF',
+        offsetX: 0,
+        offsetY: 4
+      })
+      .offset({ x: this.pillIndicatorOffsetX(), y: 0 })
+      .onTouch((event: TouchEvent) => {
+        const t = event.type;
+        if (t === TouchType.Down) {
+          this.pillTabPressed = true;
+        } else if (t === TouchType.Up || t === TouchType.Cancel) {
+          this.pillTabPressed = false;
+          if (this.pillDragMotionTimer !== -1) {
+            clearTimeout(this.pillDragMotionTimer);
+            this.pillDragMotionTimer = -1;
+          }
         }
       })
-      .onChange((index: number) => { this.currentIndex = index; })
+      .gesture(
+        PanGesture({ direction: PanDirection.Horizontal, distance: 5 })
+          .onActionUpdate((event: GestureEvent) => {
+            const cellW = this.pillCellWidth();
+            const minOffset = -this.currentIndex * cellW;
+            const maxOffset = (this.tabCount - 1 - this.currentIndex) * cellW;
+            const clamped = Math.max(minOffset, Math.min(maxOffset, event.offsetX));
+            const delta = clamped - this.pillTabDragOffset;
+            this.pillTabDragOffset = clamped;
+            if (Math.abs(delta) >= 0.5) {
+              this.pillTabMotionDirection = delta > 0 ? 1 : -1;
+              if (this.pillDragMotionTimer !== -1) {
+                clearTimeout(this.pillDragMotionTimer);
+              }
+              this.pillDragMotionTimer = setTimeout(() => {
+                this.pillTabMotionDirection = 0;
+                this.pillDragMotionTimer = -1;
+              }, 100);
+            }
+          })
+          .onActionEnd(() => {
+            if (this.pillDragMotionTimer !== -1) {
+              clearTimeout(this.pillDragMotionTimer);
+              this.pillDragMotionTimer = -1;
+            }
+            const cellW = this.pillCellWidth();
+            const continuous = this.currentIndex + this.pillTabDragOffset / cellW;
+            const target = Math.max(0, Math.min(this.tabCount - 1, Math.round(continuous)));
+            this.snapToTab(target);
+          })
+          .onActionCancel(() => {
+            if (this.pillDragMotionTimer !== -1) {
+              clearTimeout(this.pillDragMotionTimer);
+              this.pillDragMotionTimer = -1;
+            }
+            this.snapToTab(this.currentIndex);
+          })
+      )
+
+      // 3. 灰色 cell 层（始终位于胶囊原位，承接点击切换）
+      Row() {
+        ForEach([0, 1, 2, 3, 4], (i: number) => {
+          Column({ space: 2 }) {
+            Text(this.getPillTabEmoji(i))
+              .fontSize(22)
+              .opacity(0.45)
+            Text(this.getTabLabel(i))
+              .fontSize(10)
+              .fontColor($r('app.color.text_secondary'))
+              .fontWeight(FontWeight.Medium)
+              .maxLines(1)
+          }
+          .width(this.pillCellWidth())
+          .height(60)
+          .justifyContent(FlexAlign.Center)
+          .onClick(() => this.snapToTab(i))
+          .hitTestBehavior(HitTestMode.Transparent)
+        }, (i: number) => `pill-gray-${i}`)
+      }
+      .height(60)
+      .hitTestBehavior(HitTestMode.Transparent)
+
+      // 4. 白色 cell 层（裁剪到指示器范围内）
+      Row() {
+        Row() {
+          ForEach([0, 1, 2, 3, 4], (i: number) => {
+            Column({ space: 2 }) {
+              Text(this.getPillTabEmoji(i))
+                .fontSize(22)
+                .opacity(1.0)
+              Text(this.getTabLabel(i))
+                .fontSize(10)
+                .fontColor(Color.White)
+                .fontWeight(FontWeight.Medium)
+                .maxLines(1)
+            }
+            .width(this.pillCellWidth())
+            .height(60)
+            .justifyContent(FlexAlign.Center)
+            .hitTestBehavior(HitTestMode.None)
+          }, (i: number) => `pill-white-${i}`)
+        }
+        .height(60)
+        .offset({ x: -this.pillIndicatorOffsetX(), y: 0 })
+        .hitTestBehavior(HitTestMode.None)
+      }
+      .width(this.pillCellWidth() - 4)
+      .height(54)
+      .borderRadius(27)
+      .clip(true)
+      .offset({ x: this.pillIndicatorOffsetX(), y: 0 })
+      .hitTestBehavior(HitTestMode.None)
+    }
+    .height(60)
+    .padding({ left: this.pillSidePadding, right: this.pillSidePadding })
+    .width('100%')
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      const w = newArea.width as number;
+      if (w > 0 && Math.abs(w - this.pillContainerWidth) > 0.5) {
+        this.pillContainerWidth = w;
+      }
+    })
+  }
+
+  build() {
+    HdsNavigation(this.navStack) {
+      if (this.tabBarStyle === 'pill') {
+        this.PillTabsBody()
+      } else {
+        this.GlowTabsBody()
+      }
     }
     .navDestination(pageMap)
     .hideTitleBar(true)
@@ -529,5 +784,131 @@ struct Index {
     .mode(NavigationMode.Stack)
     .backgroundColor($r('app.color.app_background'))
     .expandSafeArea([], [SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder
+  GlowTabsBody() {
+    HdsTabs({ controller: this.hdsTabController }) {
+      TabContent() {
+        FlowPage({ navStack: this.navStack })
+      }
+      .tabBar(new BottomTabBarStyle({
+        normal: this.getTabNormalIcon(0),
+        selected: this.getTabSelectedIcon(0)
+      }, this.getTabLabel(0))
+        .labelStyle({
+          font: { size: 10, weight: FontWeight.Medium },
+          unselectedColor: '#8E8E93',
+          selectedColor: this.getTabColor(0)
+        })
+        .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+
+      TabContent() {
+        CalendarPage({ navStack: this.navStack })
+      }
+      .tabBar(new BottomTabBarStyle({
+        normal: this.getTabNormalIcon(1),
+        selected: this.getTabSelectedIcon(1)
+      }, this.getTabLabel(1))
+        .labelStyle({
+          font: { size: 10, weight: FontWeight.Medium },
+          unselectedColor: '#8E8E93',
+          selectedColor: this.getTabColor(1)
+        })
+        .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+
+      TabContent() {
+        TaskPage({ navPathStack: this.navStack })
+      }
+      .tabBar(new BottomTabBarStyle({
+        normal: this.getTabNormalIcon(2),
+        selected: this.getTabSelectedIcon(2)
+      }, this.getTabLabel(2))
+        .labelStyle({
+          font: { size: 10, weight: FontWeight.Medium },
+          unselectedColor: '#8E8E93',
+          selectedColor: this.getTabColor(2)
+        })
+        .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+
+      TabContent() {
+        ScholarPage({ navStack: this.navStack })
+      }
+      .tabBar(new BottomTabBarStyle({
+        normal: this.getTabNormalIcon(3),
+        selected: this.getTabSelectedIcon(3)
+      }, this.getTabLabel(3))
+        .labelStyle({
+          font: { size: 10, weight: FontWeight.Medium },
+          unselectedColor: '#8E8E93',
+          selectedColor: this.getTabColor(3)
+        })
+        .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+
+      TabContent() {
+        OptionPage({ navStack: this.navStack })
+      }
+      .tabBar(new BottomTabBarStyle({
+        normal: this.getTabNormalIcon(4),
+        selected: this.getTabSelectedIcon(4)
+      }, this.getTabLabel(4))
+        .labelStyle({
+          font: { size: 10, weight: FontWeight.Medium },
+          unselectedColor: '#8E8E93',
+          selectedColor: this.getTabColor(4)
+        })
+        .padding({ top: 4, bottom: 4, left: 2, right: 2 }))
+    }
+    .barOverlap(true)
+    .vertical(false)
+    .barPosition(BarPosition.End)
+    .barFloatingStyle({
+      barBottomMargin: 28,
+      systemMaterialEffect: {
+        materialType: hdsMaterial.MaterialType.ADAPTIVE,
+        materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+      }
+    })
+    .onChange((index: number) => { this.currentIndex = index; })
+  }
+
+  @Builder
+  PillTabsBody() {
+    Stack({ alignContent: Alignment.Bottom }) {
+      Tabs({ controller: this.tabController, index: this.currentIndex }) {
+        TabContent() {
+          FlowPage({ navStack: this.navStack })
+        }
+        TabContent() {
+          CalendarPage({ navStack: this.navStack })
+        }
+        TabContent() {
+          TaskPage({ navPathStack: this.navStack })
+        }
+        TabContent() {
+          ScholarPage({ navStack: this.navStack })
+        }
+        TabContent() {
+          OptionPage({ navStack: this.navStack })
+        }
+      }
+      .barHeight(0)
+      .scrollable(true)
+      .width('100%')
+      .height('100%')
+      .onChange((index: number) => {
+        if (index !== this.currentIndex) {
+          this.snapToTab(index);
+        }
+      })
+
+      Column() {
+        this.PillTabBar()
+      }
+      .width('100%')
+      .padding({ bottom: 28 + this.bottomRectHeight })
+    }
+    .width('100%')
+    .height('100%')
   }
 }

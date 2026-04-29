@@ -19,6 +19,7 @@ const KEY_SYNC_CALENDAR = 'sync_calendar';
 const KEY_IS_GRS = 'is_grs';
 const KEY_USERNAME = 'username';
 const KEY_THEME_MODE = 'theme_mode';
+const KEY_TAB_BAR_STYLE = 'tab_bar_style';
 const KEY_COURSE_MAPPING = 'course_mapping';
 const KEY_LAST_UPDATE = 'last_update';
 const KEY_PUSH_GRADE = 'push_grade';
@@ -252,6 +253,14 @@ export class StorageService {
     return this.loadString(KEY_THEME_MODE, 'system');
   }
 
+  async saveTabBarStyle(style: string): Promise<void> {
+    return this.saveString(KEY_TAB_BAR_STYLE, style);
+  }
+
+  async loadTabBarStyle(): Promise<string> {
+    return this.loadString(KEY_TAB_BAR_STYLE, 'glow');
+  }
+
   async saveLastUpdate(ts: number): Promise<void> {
     return this.saveNumber(KEY_LAST_UPDATE, ts);
   }
@@ -311,6 +320,7 @@ export {
   KEY_IS_GRS,
   KEY_USERNAME,
   KEY_THEME_MODE,
+  KEY_TAB_BAR_STYLE,
   KEY_LAST_UPDATE,
   KEY_PUSH_GRADE
 };

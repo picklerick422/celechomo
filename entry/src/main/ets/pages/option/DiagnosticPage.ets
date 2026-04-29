@@ -542,6 +542,109 @@ export struct DiagnosticPage {
     }
   }
 
+  // ── 测试：GPA 计算诊断 ──
+  private testGpaCalculation(): Promise<void> {
+    this.log('INFO', '── 测试: GPA 计算诊断 ──');
+    this.addTestResult('GPA 计算', 'running', '计算中...', 0);
+    const sems = this.semesters ?? [];
+    if (sems.length === 0) {
+      this.log('WARN', '无学期数据，无法计算 GPA');
+      this.addTestResult('GPA 计算', 'warn', '无学期数据', 0);
+      return Promise.resolve();
+    }
+
+    let allSame = true;
+    let firstGpaKey = '';
+    let hasGradedCourse = false;
+
+    for (let i = 0; i < sems.length; i++) {
+      const s = sems[i];
+      const graded = s.courses.filter(c => c.hasGrade && c.credits > 0);
+      this.log('INFO', `[${i}] ${s.id}: ${s.courses.length} 门课程, ${graded.length} 门有成绩`);
+
+      if (graded.length === 0) {
+        this.log('WARN', `  ${s.id}: 无有效成绩课程`);
+        continue;
+      }
+      hasGradedCourse = true;
+
+      // 打印参与计算的课程列表
+      for (let j = 0; j < Math.min(graded.length, 6); j++) {
+        const c = graded[j];
+        this.log('INFO', `  [${j}] ${c.name}: grade=${c.grade}, gp=${c.gradePoint}, credits=${c.credits}, sem=${c.semester}`);
+      }
+      if (graded.length > 6) {
+        this.log('INFO', `  ... 还有 ${graded.length - 6} 门有成绩课程`);
+      }
+
+      // 模拟 GPA 计算（与 ScholarPage.computeGpa 逻辑一致）
+      const totalCredits = graded.reduce((sum, c) => sum + c.credits, 0);
+      const weightedPct = graded.reduce((sum, c) => sum + c.grade * c.credits, 0);
+      const pctGpa = totalCredits > 0 ? weightedPct / totalCredits : 0;
+      const weightedGradePoint = graded.reduce((sum, c) => {
+        const gp = c.gradePoint >= 0 ? c.gradePoint : (c.grade >= 0 ? c.grade / 20 : 0);
+        return sum + gp * c.credits;
+      }, 0);
+      const avgGradePoint = totalCredits > 0 ? weightedGradePoint / totalCredits : 0;
+      const fivePoint = Math.round(avgGradePoint * 100) / 100;
+      const percentage = Math.round(pctGpa * 100) / 100;
+
+      this.log('INFO', `  → 计算结果: 五分制=${fivePoint}, 百分制=${percentage}, 学分=${totalCredits}`);
+      this.log('INFO', `  → 缓存结果: 五分制=${s.gpaInfo?.fivePointGpa ?? '-'}, 百分制=${s.gpaInfo?.percentageGpa ?? '-'}, 学分=${s.gpaInfo?.totalCredits ?? '-'}`);
+
+      const gpaKey = `${fivePoint.toFixed(2)}_${percentage.toFixed(2)}_${totalCredits.toFixed(1)}`;
+      if (firstGpaKey.length === 0) {
+        firstGpaKey = gpaKey;
+      } else if (gpaKey !== firstGpaKey) {
+        allSame = false;
+      }
+    }
+
+    // 检查跨学期重复课程（同名同成绩同学分）
+    this.log('INFO', '── 跨学期重复课程检查 ──');
+    const courseMap = new Map<string, number[]>();
+    for (let i = 0; i < sems.length; i++) {
+      const s = sems[i];
+      const graded = s.courses.filter(c => c.hasGrade && c.credits > 0);
+      for (const c of graded) {
+        const key = `${c.name}_${c.grade}_${c.gradePoint}_${c.credits}`;
+        if (!courseMap.has(key)) {
+          courseMap.set(key, []);
+        }
+        const arr = courseMap.get(key)!;
+        if (!arr.includes(i)) {
+          arr.push(i);
+        }
+      }
+    }
+    let dupCount = 0;
+    for (const entry of courseMap.entries()) {
+      const key = entry[0];
+      const indices = entry[1];
+      if (indices.length > 1) {
+        dupCount++;
+        const semNames = indices.map((idx: number) => sems[idx].id).join(', ');
+        this.log('WARN', `  重复课程(${indices.length}个学期): ${key.substring(0, 50)} → ${semNames}`);
+      }
+    }
+    if (dupCount === 0) {
+      this.log('OK', '  未发现跨学期重复成绩课程');
+    } else {
+      this.log('WARN', `  发现 ${dupCount} 组跨学期重复成绩课程（可能导致 GPA 相同）`);
+    }
+
+    if (!hasGradedCourse) {
+      this.addTestResult('GPA 计算', 'warn', '所有学期均无成绩', 0);
+    } else if (allSame && firstGpaKey.length > 0) {
+      this.log('ERR', '⚠️ 所有学期 GPA 计算结果完全相同！');
+      this.addTestResult('GPA 计算', 'error', '所有学期 GPA 相同', 0);
+    } else {
+      this.log('OK', '✅ 各学期 GPA 计算结果有差异');
+      this.addTestResult('GPA 计算', 'success', '各学期 GPA 有差异', 0);
+    }
+    return Promise.resolve();
+  }
+
   private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | undefined> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -832,6 +935,7 @@ export struct DiagnosticPage {
               this.QuickTestBtn('成绩', () => this.testGrades())
               this.QuickTestBtn('课表', () => this.testSchedule())
               this.QuickTestBtn('考试', () => this.testExams())
+              this.QuickTestBtn('GPA', () => this.testGpaCalculation())
               this.QuickTestBtn('学号', () => this.testStudentInfo())
               this.QuickTestBtn('网络', () => this.testConnectivity())
             }

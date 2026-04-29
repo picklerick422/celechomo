@@ -28,6 +28,15 @@ interface CourseDetailNavParam {
   semesterId: string;
 }
 
+// 学期选择器单元格：紧凑模式下混合年份和学期格
+interface DisplayCell {
+  type: string;        // 'year' | 'semester'
+  yearKey: string;     // 例如 "2025-2026"
+  label: string;       // 显示文本
+  semesterIndex: number; // 学期格 → 在 this.semesters 中的索引；年份格 → -1
+  width: number;       // 单元格宽度
+}
+
 @Component
 export struct ScholarPage {
   navStack: NavPathStack = new NavPathStack();
@@ -54,7 +63,13 @@ export struct ScholarPage {
 
   // 学期选择器（胶囊式分段控件）
   @State semesterDragOffset: number = 0;
+  @State motionDirection: number = 0; // -1=向左 0=静止 1=向右
+  @State pressed: boolean = false; // 手指是否按压在指示器上
+  @State containerAvailableWidth: number = 360; // 选择器容器可用宽度（用于决定是否进入紧凑模式；首次渲染前给一个常见手机宽度）
   private readonly semesterCellWidth: number = 108;
+  private readonly yearCellWidth: number = 60;
+  private readonly selectorPaddingX: number = 32; // 内边距 left + right
+  private dragMotionTimer: number = -1;
 
   private get studentInfo(): StudentInfo | null {
     const str = this.studentInfoStr;
@@ -134,7 +149,8 @@ export struct ScholarPage {
 
   /** 同步 _currentSemester 状态变量（在 semesterIndex 变化后调用） */
   private syncCurrentSemester(): void {
-    const sems = this.semesters ?? [];
+    // 优先从 AppStorage 直接读取最新数据，避免 @StorageLink 同步延迟导致读到旧值
+    const sems = AppStorage.get<Semester[]>(AppKeys.SEMESTERS) ?? this.semesters ?? [];
     if (sems.length === 0) {
       this._currentSemester = null;
       return;
@@ -142,17 +158,140 @@ export struct ScholarPage {
     const idx = Math.min(Math.max(0, this.semesterIndex), sems.length - 1);
     this._currentSemester = sems[idx] ?? null;
     this.updateSafeGpaInfo();
-    console.info(`[ScholarPage] syncCurrentSemester: idx=${idx}, id=${this._currentSemester?.id ?? 'null'}, courses=${this._currentSemester?.courses?.length ?? 0}`);
+    console.info(`[ScholarPage] syncCurrentSemester: idx=${idx}, id=${this._currentSemester?.id ?? 'null'}, courses=${this._currentSemester?.courses?.length ?? 0}, gpa=${this.safeGpaInfoValue.fivePointGpa}`);
+  }
+
+  /** 解析出学期所属学年（如 "2025-2026"），用于紧凑模式分组 */
+  private getYearKey(sem: Semester): string {
+    const parts = sem.id.split('-');
+    if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{4}$/.test(parts[1])) {
+      return `${parts[0]}-${parts[1]}`;
+    }
+    const m = sem.name.match(/^(\d{4})-?(\d{4})/);
+    if (m) return `${m[1]}-${m[2]}`;
+    return sem.name;
+  }
+
+  /** 把 "2025-2026" → "25-26"（紧凑模式年份格的简短显示） */
+  private getYearShortLabel(yearKey: string): string {
+    const parts = yearKey.split('-');
+    if (parts.length === 2 && parts[0].length === 4 && parts[1].length === 4) {
+      return `${parts[0].slice(2)}-${parts[1].slice(2)}`;
+    }
+    return yearKey;
+  }
+
+  /** 当前选中学期所在学年的 key */
+  private yearKeyOfSelected(): string {
+    const sems = this.semesters ?? [];
+    if (sems.length === 0) return '';
+    const idx = Math.max(0, Math.min(sems.length - 1, this.semesterIndex));
+    const sem = sems[idx];
+    return sem ? this.getYearKey(sem) : '';
+  }
+
+  /** 是否进入紧凑模式（容器宽度容不下完整选择器时） */
+  private isCompactMode(): boolean {
+    const sems = this.semesters ?? [];
+    if (sems.length <= 1) return false;
+    const naturalWidth = sems.length * this.semesterCellWidth;
+    const usable = this.containerAvailableWidth - this.selectorPaddingX;
+    return usable > 0 && naturalWidth > usable;
+  }
+
+  /** 计算当前应当显示的单元格列表（学期格 / 年份格混合） */
+  private displayCells(): DisplayCell[] {
+    const sems = this.semesters ?? [];
+    if (sems.length === 0) return [];
+
+    if (!this.isCompactMode()) {
+      const result: DisplayCell[] = [];
+      for (let i = 0; i < sems.length; i++) {
+        const sem = sems[i];
+        const cell: DisplayCell = {
+          type: 'semester',
+          yearKey: this.getYearKey(sem),
+          label: sem.name,
+          semesterIndex: i,
+          width: this.semesterCellWidth
+        };
+        result.push(cell);
+      }
+      return result;
+    }
+
+    const selectedYear = this.yearKeyOfSelected();
+    const cells: DisplayCell[] = [];
+    const seenYears = new Set<string>();
+    for (let i = 0; i < sems.length; i++) {
+      const sem = sems[i];
+      const yk = this.getYearKey(sem);
+      if (yk === selectedYear) {
+        const cell: DisplayCell = {
+          type: 'semester',
+          yearKey: yk,
+          label: sem.name,
+          semesterIndex: i,
+          width: this.semesterCellWidth
+        };
+        cells.push(cell);
+      } else if (!seenYears.has(yk)) {
+        seenYears.add(yk);
+        const cell: DisplayCell = {
+          type: 'year',
+          yearKey: yk,
+          label: this.getYearShortLabel(yk),
+          semesterIndex: -1,
+          width: this.yearCellWidth
+        };
+        cells.push(cell);
+      }
+    }
+    return cells;
+  }
+
+  /** 当前选择器内容区总宽度（动画属性） */
+  private totalDisplayWidth(): number {
+    const cells = this.displayCells();
+    let sum = 0;
+    for (const c of cells) {
+      sum += c.width;
+    }
+    return Math.max(sum, this.semesterCellWidth);
+  }
+
+  /** 紧凑模式下展开年份的拖拽范围（用于在已展开的学期范围内允许拖拽） */
+  private getExpandedYearRange(): number[] {
+    // 返回 [startSemesterIndex, count, selectedJ]；若不在紧凑模式或异常返回 [-1,0,0]
+    const cells = this.displayCells() ?? [];
+    let firstSemIdx = -1;
+    let count = 0;
+    let selectedJ = 0;
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      if (c.type === 'semester') {
+        if (firstSemIdx === -1) firstSemIdx = c.semesterIndex;
+        if (c.semesterIndex === this.semesterIndex) selectedJ = count;
+        count++;
+      } else if (firstSemIdx !== -1) {
+        break; // 学期格在 displayCells 中是连续的（同一展开年）
+      }
+    }
+    return [firstSemIdx, count, selectedJ];
   }
 
   /** 学期选择指示器在容器内的左偏移（含 2px 内边距）。在拖拽过程中跟手位移。 */
   private indicatorOffsetX(): number {
-    const count = (this.semesters ?? []).length;
-    if (count <= 0) return 2;
-    const baseX = this.semesterIndex * this.semesterCellWidth + this.semesterDragOffset;
-    const maxX = (count - 1) * this.semesterCellWidth;
-    const clamped = Math.max(0, Math.min(maxX, baseX));
-    return clamped + 2;
+    const cells = this.displayCells() ?? [];
+    if (cells.length === 0) return 2;
+    let x = 2;
+    for (const c of cells) {
+      if (c.type === 'semester' && c.semesterIndex === this.semesterIndex) {
+        return x + this.semesterDragOffset;
+      }
+      x += c.width;
+    }
+    return 2;
   }
 
   /** 平滑吸附到指定学期序号。 */
@@ -161,18 +300,46 @@ export struct ScholarPage {
     if (count <= 0) return;
     const target = Math.max(0, Math.min(count - 1, idx));
     const changed = target !== this.semesterIndex;
+
+    // 方向：目标 vs 当前的 semesterIndex 比较；若相同但有拖拽偏移则按回弹方向
+    if (target > this.semesterIndex) {
+      this.motionDirection = 1;
+    } else if (target < this.semesterIndex) {
+      this.motionDirection = -1;
+    } else if (Math.abs(this.semesterDragOffset) > 0.5) {
+      this.motionDirection = this.semesterDragOffset > 0 ? -1 : 1;
+    } else {
+      this.motionDirection = 0;
+    }
+
     try {
-      this.getUIContext().animateTo({ duration: 240, curve: Curve.FastOutSlowIn }, () => {
+      this.getUIContext().animateTo({
+        duration: 320,
+        curve: Curve.FastOutSlowIn,
+        onFinish: () => {
+          this.motionDirection = 0;
+        }
+      }, () => {
         this.semesterIndex = target;
         this.semesterDragOffset = 0;
       });
     } catch {
       this.semesterIndex = target;
       this.semesterDragOffset = 0;
+      this.motionDirection = 0;
     }
     if (changed) {
       this.syncCurrentSemester();
       this.onSemesterChanged();
+    }
+  }
+
+  /** 紧凑模式下点击年份格：自动选中该学年的第一个学期（触发该年展开） */
+  private snapToYear(yearKey: string): void {
+    const sems = this.semesters ?? [];
+    const idx = sems.findIndex(s => this.getYearKey(s) === yearKey);
+    if (idx >= 0) {
+      this.snapToSemester(idx);
     }
   }
 
@@ -204,7 +371,19 @@ export struct ScholarPage {
   private updateSafeGpaInfo(): void {
     const sem = this._currentSemester;
     if (sem !== null && sem !== undefined && sem.gpaInfo !== undefined && sem.gpaInfo !== null) {
-      this.safeGpaInfoValue = sem.gpaInfo;
+      // 深拷贝：避免 safeGpaInfoValue 和 sem.gpaInfo 共享引用
+      const gpa = new GpaInfo();
+      gpa.fivePointGpa = sem.gpaInfo.fivePointGpa;
+      gpa.fourThreeGpa = sem.gpaInfo.fourThreeGpa;
+      gpa.rawFourPointGpa = sem.gpaInfo.rawFourPointGpa;
+      gpa.percentageGpa = sem.gpaInfo.percentageGpa;
+      gpa.totalCredits = sem.gpaInfo.totalCredits;
+      gpa.yearCredits = sem.gpaInfo.yearCredits;
+      gpa.yearGpa = sem.gpaInfo.yearGpa;
+      gpa.majorCredits = sem.gpaInfo.majorCredits;
+      gpa.majorGpa = sem.gpaInfo.majorGpa;
+      gpa.majorFourGpa = sem.gpaInfo.majorFourGpa;
+      this.safeGpaInfoValue = gpa;
     } else {
       this.safeGpaInfoValue = new GpaInfo();
     }
@@ -232,7 +411,10 @@ export struct ScholarPage {
     const expectedTerms = termNum === 1 ? ['3', '1'] : ['12', '2'];
 
     const filtered = courses.filter(c => {
-      if (!c.semester || c.semester.length === 0) return false;
+      // 学期信息缺失或为空：保守策略，直接过滤掉，避免混入其他学期
+      if (!c.semester || c.semester.length === 0 || c.semester === '-') {
+        return false;
+      }
       const cParts = c.semester.split('-');
 
       // 格式1: "2025-2026-12" (3段, 范围-year + term)
@@ -246,7 +428,9 @@ export struct ScholarPage {
       if (cParts.length === 2) {
         const cShortYear = cParts[0];
         const cTerm = cParts[1];
-        return cShortYear === shortYear && expectedTerms.includes(cTerm);
+        // 支持单年格式（如 "2025-3"）和学年格式（如 "2024-2025-3"）的匹配
+        const yearMatch = cShortYear === shortYear || cShortYear === year || `${cShortYear}-${String(parseInt(cShortYear) + 1)}` === year;
+        return yearMatch && expectedTerms.includes(cTerm);
       }
 
       return c.semester === semesterId;
@@ -343,7 +527,7 @@ export struct ScholarPage {
       const results = await Promise.all([
         fetchGrades(sem.id, timeoutMs),
         fetchCourseSchedule(sem.id, timeoutMs),
-        fetchExams(sem.id, timeoutMs, sem.startDate, sem.endDate),
+        fetchExams(sem.id, timeoutMs, sem.startDate.getTime(), sem.endDate.getTime()),
         fetchTodos(sem.id, timeoutMs)
       ]);
       const gradesResult = results[0];
@@ -351,7 +535,12 @@ export struct ScholarPage {
       const examsResult = results[2];
       const todosResult = results[3];
 
-      console.info(`[ScholarPage] ${sem.id} raw results: grades.success=${gradesResult.success} len=${gradesResult.data?.length ?? 0} msg="${gradesResult.message}", schedule.success=${scheduleResult.success} len=${scheduleResult.data?.length ?? 0} msg="${scheduleResult.message}", exams.success=${examsResult.success} len=${examsResult.data?.length ?? 0}, todos.success=${todosResult.success} len=${todosResult.data?.length ?? 0}`);
+      // 诊断：打印成绩数据的前3条摘要，确认是否跨学期
+      let gradeSummary = '';
+      if (gradesResult.success && gradesResult.data && gradesResult.data.length > 0) {
+        gradeSummary = gradesResult.data.slice(0, 3).map(g => `${g.name}(${g.semester},${g.grade})`).join('; ');
+      }
+      console.info(`[ScholarPage] ${sem.id} raw results: grades.success=${gradesResult.success} len=${gradesResult.data?.length ?? 0} msg="${gradesResult.message}" summary=[${gradeSummary}], schedule.success=${scheduleResult.success} len=${scheduleResult.data?.length ?? 0} msg="${scheduleResult.message}", exams.success=${examsResult.success} len=${examsResult.data?.length ?? 0}, todos.success=${todosResult.success} len=${todosResult.data?.length ?? 0}`);
 
       // 以课表数据为基础创建课程列表（课表API可能返回全年课程，需按semester过滤）
       let courses: Course[] = [];
@@ -375,15 +564,14 @@ export struct ScholarPage {
       if (gradesResult.success && gradesResult.data && gradesResult.data.length > 0) {
         // 先用 filterCoursesBySemester 过滤出属于当前学期的成绩，避免同名课程跨学期匹配错误
         let currentGrades = this.filterCoursesBySemester(gradesResult.data, sem.id);
-        console.info(`[ScholarPage] ${sem.id}: ${gradesResult.data.length} total grades, ${currentGrades.length} have valid semester info`);
+        console.info(`[ScholarPage] ${sem.id}: ${gradesResult.data.length} total grades, ${currentGrades.length} matched current semester`);
 
-        // 回退：如果 xkkh 解析失败导致过滤后为空，直接按名称匹配课表课程（近似方案）
-        const useFallback = currentGrades.length === 0 && gradesResult.data.length > 0;
-        if (useFallback) {
-          console.warn(`[ScholarPage] ${sem.id}: xkkh parse failed for all grades, falling back to name-based matching`);
+        // 安全策略：如果过滤后为空，宁可遗漏也不要混入跨学期成绩
+        let gradesToMatch = currentGrades;
+        if (currentGrades.length === 0 && gradesResult.data.length > 0) {
+          console.warn(`[ScholarPage] ${sem.id}: No grades matched after filtering, skipping grade matching to avoid cross-semester contamination`);
+          gradesToMatch = [];
         }
-
-        const gradesToMatch = useFallback ? gradesResult.data : currentGrades;
 
         for (const gradeCourse of gradesToMatch) {
           // 按课程号或名称匹配课表课程
@@ -404,13 +592,12 @@ export struct ScholarPage {
             if (match.credits <= 0 && gradeCourse.credits > 0) {
               match.credits = gradeCourse.credits;
             }
-          } else if (!useFallback) {
+          } else {
             // 属于当前学期但没有匹配的课表课程，添加为独立课程
             courses.push(gradeCourse);
           }
-          // fallback 模式下：不添加不匹配的课程（避免混入其他学期）
         }
-        console.info(`[ScholarPage] ${sem.id}: final ${courses.length} courses (${useFallback ? 'fallback' : 'semester-filtered'} mode)`);
+        console.info(`[ScholarPage] ${sem.id}: final ${courses.length} courses (semester-filtered mode)`);
       } else if (!gradesResult.success) {
         console.warn(`[ScholarPage] ${sem.id}: grades fetch failed: ${gradesResult.message}`);
       }
@@ -440,7 +627,7 @@ export struct ScholarPage {
       const results = await Promise.all([
         fetchGrades(sem.id, apiTimeout),
         fetchCourseSchedule(sem.id, apiTimeout),
-        fetchExams(sem.id, apiTimeout, sem.startDate, sem.endDate),
+        fetchExams(sem.id, apiTimeout, sem.startDate.getTime(), sem.endDate.getTime()),
         fetchTodos(sem.id, apiTimeout)
       ]);
 
@@ -449,7 +636,12 @@ export struct ScholarPage {
       const examsResult = results[2];
       const todosResult = results[3];
 
-      console.info(`[ScholarPage] Semester ${sem.id}: grades=${gradesResult.data?.length ?? 0}, schedule=${scheduleResult.data?.length ?? 0}, exams=${examsResult.data?.length ?? 0}, todos=${todosResult.data?.length ?? 0}`);
+      // 诊断：打印成绩数据的前3条摘要，确认是否跨学期
+      let gradeSummary = '';
+      if (gradesResult.success && gradesResult.data && gradesResult.data.length > 0) {
+        gradeSummary = gradesResult.data.slice(0, 3).map(g => `${g.name}(${g.semester},${g.grade})`).join('; ');
+      }
+      console.info(`[ScholarPage] Semester ${sem.id}: grades=${gradesResult.data?.length ?? 0} [${gradeSummary}], schedule=${scheduleResult.data?.length ?? 0}, exams=${examsResult.data?.length ?? 0}, todos=${todosResult.data?.length ?? 0}`);
 
       // 以课表数据为基础创建课程列表（课表API可能返回全年课程，需按semester过滤）
       let courses: Course[] = [];
@@ -470,15 +662,14 @@ export struct ScholarPage {
       if (gradesResult.success && gradesResult.data) {
         // 先用 filterCoursesBySemester 过滤出属于当前学期的成绩，避免同名课程跨学期匹配错误
         let currentGrades = this.filterCoursesBySemester(gradesResult.data, sem.id);
-        console.info(`[ScholarPage] ${sem.id}: ${gradesResult.data.length} total grades, ${currentGrades.length} have valid semester info`);
+        console.info(`[ScholarPage] ${sem.id}: ${gradesResult.data.length} total grades, ${currentGrades.length} matched current semester`);
 
-        // 回退：如果 xkkh 解析失败导致过滤后为空，直接按名称匹配课表课程（近似方案）
-        const useFallback = currentGrades.length === 0 && gradesResult.data.length > 0;
-        if (useFallback) {
-          console.warn(`[ScholarPage] ${sem.id}: xkkh parse failed for all grades, falling back to name-based matching`);
+        // 安全策略：如果过滤后为空，宁可遗漏也不要混入跨学期成绩
+        let gradesToMatch = currentGrades;
+        if (currentGrades.length === 0 && gradesResult.data.length > 0) {
+          console.warn(`[ScholarPage] ${sem.id}: No grades matched after filtering, skipping grade matching to avoid cross-semester contamination`);
+          gradesToMatch = [];
         }
-
-        const gradesToMatch = useFallback ? gradesResult.data : currentGrades;
 
         for (const gradeCourse of gradesToMatch) {
           const matchById = gradeCourse.courseId.length > 0
@@ -496,11 +687,11 @@ export struct ScholarPage {
             if (match.credits <= 0 && gradeCourse.credits > 0) {
               match.credits = gradeCourse.credits;
             }
-          } else if (!useFallback) {
+          } else {
             courses.push(gradeCourse);
           }
         }
-        console.info(`[ScholarPage] Set ${courses.length} courses for ${sem.id} (${useFallback ? 'fallback' : 'semester-filtered'} mode)`);
+        console.info(`[ScholarPage] Set ${courses.length} courses for ${sem.id} (semester-filtered mode)`);
       } else {
         console.info(`[ScholarPage] Set ${courses.length} courses for ${sem.id} from schedule only`);
       }
@@ -670,8 +861,9 @@ export struct ScholarPage {
       if (this.semesterIndex !== targetIndex) {
         this.semesterIndex = targetIndex;
         console.info(`[ScholarPage] fetchData auto-selected semester index: ${targetIndex}`);
-        this.syncCurrentSemester();
       }
+      // 强制同步当前学期和 GPA 显示（防御性编程，确保 @StorageLink 更新后 UI 正确刷新）
+      this.syncCurrentSemester();
 
       const ts = Date.now();
       AppStorage.set(AppKeys.LAST_UPDATE, ts);
@@ -721,35 +913,43 @@ export struct ScholarPage {
   }
 
   private computeGpa(semester: Semester): void {
-    const courses = semester.courses.filter(c => c.hasGrade && c.credits > 0);
-    if (courses.length === 0) return;
+    const gradedCourses = semester.courses.filter(c => c.hasGrade && c.credits > 0);
+    console.info(`[ScholarPage] computeGpa input for ${semester.id}: ${semester.courses.length} total courses, ${gradedCourses.length} have grade+credits`);
+    if (gradedCourses.length === 0) {
+      console.warn(`[ScholarPage] computeGpa skipped for ${semester.id}: no graded courses`);
+      return;
+    }
+    // 诊断：打印参与计算的课程列表
+    for (let i = 0; i < Math.min(gradedCourses.length, 8); i++) {
+      const c = gradedCourses[i];
+      console.info(`[ScholarPage]  [course${i}] ${c.name}: grade=${c.grade}, gp=${c.gradePoint}, credits=${c.credits}, sem=${c.semester}`);
+    }
 
-    const totalCredits = courses.reduce((sum, c) => sum + c.credits, 0);
-    const weightedPct = courses.reduce((sum, c) => sum + c.grade * c.credits, 0);
+    const totalCredits = gradedCourses.reduce((sum, c) => sum + c.credits, 0);
+
+    // 百分制加权平均分（保留作为参考）
+    const weightedPct = gradedCourses.reduce((sum, c) => sum + c.grade * c.credits, 0);
     const pctGpa = totalCredits > 0 ? weightedPct / totalCredits : 0;
 
-    // 百分制转四分制（近似）
-    const toFourPoint = (pct: number): number => {
-      if (pct >= 90) return 4.0;
-      if (pct >= 85) return 3.7;
-      if (pct >= 82) return 3.3;
-      if (pct >= 78) return 3.0;
-      if (pct >= 75) return 2.7;
-      if (pct >= 72) return 2.3;
-      if (pct >= 68) return 2.0;
-      if (pct >= 64) return 1.5;
-      if (pct >= 60) return 1.0;
-      return 0;
-    };
+    // 使用教务系统返回的原始绩点进行学分加权平均
+    const weightedGradePoint = gradedCourses.reduce((sum, c) => {
+      const gp = c.gradePoint >= 0 ? c.gradePoint : (c.grade >= 0 ? c.grade / 20 : 0);
+      return sum + gp * c.credits;
+    }, 0);
+    const avgGradePoint = totalCredits > 0 ? weightedGradePoint / totalCredits : 0;
 
-    const weightedFour = courses.reduce((sum, c) => sum + toFourPoint(c.grade) * c.credits, 0);
-    const fourGpa = totalCredits > 0 ? weightedFour / totalCredits : 0;
-
-    semester.gpaInfo.percentageGpa = Math.round(pctGpa * 100) / 100;
-    semester.gpaInfo.rawFourPointGpa = Math.round(fourGpa * 100) / 100;
-    semester.gpaInfo.fourThreeGpa = Math.min(4.3, fourGpa);
-    semester.gpaInfo.fivePointGpa = Math.min(5, pctGpa / 20);
-    semester.gpaInfo.totalCredits = totalCredits;
+    // 创建新的 GpaInfo 实例，确保每个学期独立，不共享引用
+    const gpa = new GpaInfo();
+    gpa.percentageGpa = Math.round(pctGpa * 100) / 100;
+    // 五分制 GPA = 原始绩点学分加权平均
+    gpa.fivePointGpa = Math.round(avgGradePoint * 100) / 100;
+    // 四分制 GPA：常见转换 (五分制绩点 - 1)
+    const fourGpa = Math.max(0, avgGradePoint - 1);
+    gpa.rawFourPointGpa = Math.round(fourGpa * 100) / 100;
+    gpa.fourThreeGpa = Math.min(4.3, fourGpa);
+    gpa.totalCredits = totalCredits;
+    semester.gpaInfo = gpa;
+    console.info(`[ScholarPage] computeGpa result for ${semester.id}: fivePoint=${gpa.fivePointGpa}, fourPoint=${gpa.rawFourPointGpa}, percentage=${gpa.percentageGpa}, credits=${gpa.totalCredits}`);
   }
 
   @Builder
@@ -758,7 +958,7 @@ export struct ScholarPage {
       Stack({ alignContent: Alignment.Start }) {
         // 1. 底层胶囊背景（仅背景，不含文字）
         Row()
-          .width(Math.max((this.semesters ?? []).length, 1) * this.semesterCellWidth)
+          .width(this.totalDisplayWidth())
           .height(44)
           .borderRadius(22)
           .backgroundColor($r('app.color.tile_bg'))
@@ -772,20 +972,27 @@ export struct ScholarPage {
 
         // 2. 指示器：主题色小胶囊（仅背景，位于文字后面），可拖拽
         if ((this.semesters ?? []).length > 0) {
-          Row() {
-            // 粒子特效（始终运行，拖拽时尾迹效果更明显）
+          Stack() {
+            // 主题色背景层
+            Row()
+              .width('100%')
+              .height('100%')
+              .backgroundColor($r('app.color.color_blue'))
+
+            // 粒子层（按下时小范围闪烁，滑动时与方向同向喷射）
             Particle({
               particles: [
                 {
+                  // 0 号粒子：环境闪烁（按下且未滑动时启用）
                   emitter: {
                     particle: {
                       type: ParticleType.POINT,
-                      config: { radius: 1.2 },
-                      count: 28,
-                      lifetime: 1000,
-                      lifetimeRange: 300
+                      config: { radius: 1.0 },
+                      count: -1,
+                      lifetime: 800,
+                      lifetimeRange: 200
                     },
-                    emitRate: 14,
+                    emitRate: 0,
                     shape: ParticleEmitterShape.RECTANGLE,
                     position: [0, 0],
                     size: ['100%', '100%']
@@ -794,16 +1001,48 @@ export struct ScholarPage {
                     range: ['#FFFFFFFF', '#FFFFFFFF']
                   },
                   opacity: {
-                    range: [0.5, 0.95],
+                    range: [0.0, 1.0],
                     updater: {
                       type: ParticleUpdater.CURVE,
                       config: [
-                        {
-                          from: 0.9,
-                          to: 0,
-                          startMillis: 200,
-                          endMillis: 1000
-                        }
+                        { from: 0.0, to: 1.0, startMillis: 0, endMillis: 200 },
+                        { from: 1.0, to: 0.0, startMillis: 200, endMillis: 800 }
+                      ]
+                    }
+                  },
+                  scale: {
+                    range: [0.4, 1.4]
+                  },
+                  velocity: {
+                    speed: [3, 10],
+                    angle: [0, 360]
+                  }
+                },
+                {
+                  // 1 号粒子：向右喷射（指示器向右移动时启用）
+                  emitter: {
+                    particle: {
+                      type: ParticleType.POINT,
+                      config: { radius: 1.3 },
+                      count: -1,
+                      lifetime: 500,
+                      lifetimeRange: 200
+                    },
+                    emitRate: 0,
+                    shape: ParticleEmitterShape.RECTANGLE,
+                    position: [0, 0],
+                    size: ['100%', '100%']
+                  },
+                  color: {
+                    range: ['#FFFFFFFF', '#FFFFFFFF']
+                  },
+                  opacity: {
+                    range: [0.0, 1.0],
+                    updater: {
+                      type: ParticleUpdater.CURVE,
+                      config: [
+                        { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
+                        { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
                       ]
                     }
                   },
@@ -811,8 +1050,44 @@ export struct ScholarPage {
                     range: [0.4, 1.6]
                   },
                   velocity: {
-                    speed: [3, 12],
-                    angle: [-180, 180]
+                    speed: [60, 120],
+                    angle: [-25, 25]
+                  }
+                },
+                {
+                  // 2 号粒子：向左喷射（指示器向左移动时启用）
+                  emitter: {
+                    particle: {
+                      type: ParticleType.POINT,
+                      config: { radius: 1.3 },
+                      count: -1,
+                      lifetime: 500,
+                      lifetimeRange: 200
+                    },
+                    emitRate: 0,
+                    shape: ParticleEmitterShape.RECTANGLE,
+                    position: [0, 0],
+                    size: ['100%', '100%']
+                  },
+                  color: {
+                    range: ['#FFFFFFFF', '#FFFFFFFF']
+                  },
+                  opacity: {
+                    range: [0.0, 1.0],
+                    updater: {
+                      type: ParticleUpdater.CURVE,
+                      config: [
+                        { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
+                        { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
+                      ]
+                    }
+                  },
+                  scale: {
+                    range: [0.4, 1.6]
+                  },
+                  velocity: {
+                    speed: [60, 120],
+                    angle: [155, 205]
                   }
                 }
               ]
@@ -820,11 +1095,15 @@ export struct ScholarPage {
               .width('100%')
               .height('100%')
               .hitTestBehavior(HitTestMode.None)
+              .emitter([
+                { index: 0, emitRate: (this.pressed && this.motionDirection === 0) ? 25 : 0 },
+                { index: 1, emitRate: this.motionDirection > 0 ? 80 : 0 },
+                { index: 2, emitRate: this.motionDirection < 0 ? 80 : 0 }
+              ])
           }
             .width(this.semesterCellWidth - 4)
             .height(38)
             .borderRadius(19)
-            .backgroundColor($r('app.color.color_blue'))
             .clip(true)
             .shadow({
               radius: 10,
@@ -833,17 +1112,61 @@ export struct ScholarPage {
               offsetY: 4
             })
             .offset({ x: this.indicatorOffsetX(), y: 0 })
+            .onTouch((event: TouchEvent) => {
+              const t = event.type;
+              if (t === TouchType.Down) {
+                this.pressed = true;
+              } else if (t === TouchType.Up || t === TouchType.Cancel) {
+                this.pressed = false;
+                if (this.dragMotionTimer !== -1) {
+                  clearTimeout(this.dragMotionTimer);
+                  this.dragMotionTimer = -1;
+                }
+              }
+            })
             .gesture(
               PanGesture({ direction: PanDirection.Horizontal, distance: 5 })
                 .onActionUpdate((event: GestureEvent) => {
-                  this.semesterDragOffset = event.offsetX;
+                  const range = this.getExpandedYearRange();
+                  const count = range[1];
+                  if (count <= 1) return;
+                  const j = range[2];
+                  const minOffset = -j * this.semesterCellWidth;
+                  const maxOffset = (count - 1 - j) * this.semesterCellWidth;
+                  const clamped = Math.max(minOffset, Math.min(maxOffset, event.offsetX));
+                  const delta = clamped - this.semesterDragOffset;
+                  this.semesterDragOffset = clamped;
+                  if (Math.abs(delta) >= 0.5) {
+                    this.motionDirection = delta > 0 ? 1 : -1;
+                    if (this.dragMotionTimer !== -1) {
+                      clearTimeout(this.dragMotionTimer);
+                    }
+                    this.dragMotionTimer = setTimeout(() => {
+                      this.motionDirection = 0;
+                      this.dragMotionTimer = -1;
+                    }, 100);
+                  }
                 })
                 .onActionEnd((event: GestureEvent) => {
-                  const rawX = this.semesterIndex * this.semesterCellWidth + this.semesterDragOffset;
-                  const target = Math.round(rawX / this.semesterCellWidth);
-                  this.snapToSemester(target);
+                  if (this.dragMotionTimer !== -1) {
+                    clearTimeout(this.dragMotionTimer);
+                    this.dragMotionTimer = -1;
+                  }
+                  const range = this.getExpandedYearRange();
+                  if (range[0] < 0 || range[1] === 0) {
+                    this.snapToSemester(this.semesterIndex);
+                    return;
+                  }
+                  const j = range[2];
+                  const continuous = j + this.semesterDragOffset / this.semesterCellWidth;
+                  const targetJ = Math.max(0, Math.min(range[1] - 1, Math.round(continuous)));
+                  this.snapToSemester(range[0] + targetJ);
                 })
                 .onActionCancel(() => {
+                  if (this.dragMotionTimer !== -1) {
+                    clearTimeout(this.dragMotionTimer);
+                    this.dragMotionTimer = -1;
+                  }
                   this.snapToSemester(this.semesterIndex);
                 })
             )
@@ -851,19 +1174,25 @@ export struct ScholarPage {
 
         // 3. 学期文字层（灰色，始终位于胶囊原位；点击切换、拖拽透传至指示器）
         Row() {
-          ForEach(this.semesters, (sem: Semester, idx: number) => {
-            Text(sem.name)
-              .width(this.semesterCellWidth)
+          ForEach(this.displayCells(), (cell: DisplayCell) => {
+            Text(cell.label)
+              .width(cell.width)
               .height(44)
               .textAlign(TextAlign.Center)
-              .fontSize(14)
+              .fontSize(cell.type === 'year' ? 13 : 14)
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_secondary'))
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .onClick(() => this.snapToSemester(idx))
+              .onClick(() => {
+                if (cell.type === 'year') {
+                  this.snapToYear(cell.yearKey);
+                } else {
+                  this.snapToSemester(cell.semesterIndex);
+                }
+              })
               .hitTestBehavior(HitTestMode.Transparent)
-          }, (sem: Semester) => sem.id)
+          }, (cell: DisplayCell) => cell.type + '-' + cell.yearKey + '-' + cell.semesterIndex)
         }
         .height(44)
         .hitTestBehavior(HitTestMode.Transparent)
@@ -872,18 +1201,18 @@ export struct ScholarPage {
         if ((this.semesters ?? []).length > 0) {
           Row() {
             Row() {
-              ForEach(this.semesters, (sem: Semester, idx: number) => {
-                Text(sem.name)
-                  .width(this.semesterCellWidth)
+              ForEach(this.displayCells(), (cell: DisplayCell) => {
+                Text(cell.label)
+                  .width(cell.width)
                   .height(44)
                   .textAlign(TextAlign.Center)
-                  .fontSize(14)
+                  .fontSize(cell.type === 'year' ? 13 : 14)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(Color.White)
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                   .hitTestBehavior(HitTestMode.None)
-              }, (sem: Semester) => sem.id)
+              }, (cell: DisplayCell) => cell.type + '-' + cell.yearKey + '-' + cell.semesterIndex)
             }
             .height(44)
             .offset({ x: -this.indicatorOffsetX(), y: 0 })
@@ -904,6 +1233,21 @@ export struct ScholarPage {
     .scrollBar(BarState.Off)
     .width('100%')
     .height(52)
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      const w = newArea.width as number;
+      if (w > 0 && Math.abs(w - this.containerAvailableWidth) > 0.5) {
+        try {
+          this.getUIContext().animateTo({
+            duration: 360,
+            curve: Curve.EaseInOut
+          }, () => {
+            this.containerAvailableWidth = w;
+          });
+        } catch {
+          this.containerAvailableWidth = w;
+        }
+      }
+    })
   }
 
   @Builder
@@ -1565,29 +1909,32 @@ export struct ScholarPage {
 
               // 当前学期数据卡片
               if (this._currentSemester !== null && this._currentSemester !== undefined) {
-                // 显示学期信息
-                Row() {
+                // 显示学期信息（标题左对齐，简述信息紧跟其右）
+                Row({ space: 10 }) {
                   Text(this._currentSemester.name)
-                    .fontSize(22)
+                    .fontSize(28)
                     .fontColor($r('app.color.text_primary'))
                     .fontWeight(FontWeight.Bold)
-                  Blank()
+
+                  Text(`课程 ${this._currentSemester!.courses.length} · 考试 ${this._currentSemester!.exams.length} · 作业 ${this._currentSemester!.todos.length}`)
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .layoutWeight(1)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .padding({ bottom: 4 })
+
                   if (this._currentSemester !== null && this._currentSemester !== undefined && (this._currentSemester.courses?.length ?? 0) === 0 && !this.isRefreshing) {
-                    Text('点击刷新获取数据')
+                    Text('点击刷新')
                       .fontSize(13)
                       .fontColor($r('app.color.color_blue'))
+                      .padding({ bottom: 4 })
                       .onClick(() => this.triggerFetchCurrentSemester())
                   }
                 }
+                .width('100%')
+                .alignItems(VerticalAlign.Bottom)
                 .padding({ left: 4, right: 4, top: 4, bottom: 6 })
-
-                // 诊断信息（调试用，确认数据状态）
-                Row() {
-                  Text(`📊 ${this._currentSemester!.name} | 课程${this._currentSemester!.courses.length} | 考试${this._currentSemester!.exams.length} | 作业${this._currentSemester!.todos.length}`)
-                    .fontSize(10)
-                    .fontColor($r('app.color.text_tertiary'))
-                }
-                .padding({ left: 4, bottom: 4 })
 
                 this.GradeModule()
                 this.CourseModule()

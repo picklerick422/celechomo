@@ -827,7 +827,7 @@ export async function fetchGrades(semesterId: string, timeoutMs?: number): Promi
         return { success: false, message: '成绩接口返回异常（会话可能已失效）' };
       }
 
-      const courses = parseGradesFromJson(raw);
+      const courses = parseGradesFromJson(raw, semesterId);
       // 统一 uid 格式为 course_{courseId}_{semesterId}，与课表 API 保持一致
       for (const c of courses) {
         c.uid = `course_${c.courseId}_${semesterId}`;
@@ -897,7 +897,7 @@ export async function fetchCourseSchedule(semesterId: string, timeoutMs?: number
   return { success: false, message: '获取课表失败' };
 }
 
-export async function fetchExams(semesterId: string, timeoutMs?: number, semesterStart?: Date, semesterEnd?: Date): Promise<FetchResult<Exam[]>> {
+export async function fetchExams(semesterId: string, timeoutMs?: number, semesterStartMs?: number, semesterEndMs?: number): Promise<FetchResult<Exam[]>> {
   const maxRetries = timeoutMs !== undefined && timeoutMs <= 10000 ? 0 : 2;
   const studentId = getStudentId();
 
@@ -943,7 +943,7 @@ export async function fetchExams(semesterId: string, timeoutMs?: number, semeste
         if (fallbackResp.responseCode === 200) {
           const fallbackRaw = fallbackResp.result as string;
           if (!fallbackRaw.trimStart().startsWith('<')) {
-            const exams = parseExamsFromJson(fallbackRaw, semesterId, semesterStart, semesterEnd);
+            const exams = parseExamsFromJson(fallbackRaw, semesterId, semesterStartMs, semesterEndMs);
             return { success: true, data: exams, message: '获取成功' };
           }
         }
@@ -983,7 +983,7 @@ export async function fetchExams(semesterId: string, timeoutMs?: number, semeste
 
       // 构造一个包含所有 items 的伪响应对象进行统一解析
       const mergedJson = JSON.stringify({ items: allItems });
-      const exams = parseExamsFromJson(mergedJson, semesterId, semesterStart, semesterEnd);
+      const exams = parseExamsFromJson(mergedJson, semesterId, semesterStartMs, semesterEndMs);
       return { success: true, data: exams, message: '获取成功' };
     } catch (err) {
       const errorMsg = (err as Error).message;
@@ -1426,7 +1426,7 @@ function pickNum(item: Record<string, Object>, ...keys: string[]): number {
   return NaN;
 }
 
-function parseGradesFromJson(json: string): Course[] {
+function parseGradesFromJson(json: string, defaultSemesterId?: string): Course[] {
   try {
     const data = JSON.parse(json) as GradesResponse;
     const items = data.items ?? data.rows ?? [];
@@ -1438,6 +1438,7 @@ function parseGradesFromJson(json: string): Course[] {
       const samplePairs = Object.entries(first).slice(0, 8).map((entry: [string, Object]) => `${entry[0]}=${String(entry[1]).substring(0, 30)}`).join(', ');
       console.info(`[NetworkService] Grade sample: ${samplePairs}`);
     }
+    let fallbackCount = 0;
     const parsedCourses = items.map((item, idx) => {
       const raw = item as Record<string, Object>;
       const c = new Course();
@@ -1467,21 +1468,33 @@ function parseGradesFromJson(json: string): Course[] {
       // 学期 - 优先从选课课号(xkkh)解析，因为成绩API可能不返回xnm/xqm字段
       const xkkh = pickStr(raw, 'xkkh', 'xkkh_id', 'xkkhId');
       if (xkkh.length > 0) {
-        // 尝试多种格式: "2024-2025-1-..." "2024-2025-1)..." "(2024-2025-1)..."
-        let m = xkkh.match(/(\d{4})[\-\.\s](\d{4})[\-\.\s]([123])/);
+        // 格式1: "2024-2025-1-..." "2024_2025_1..." "(2024-2025-1)..."
+        let m = xkkh.match(/(\d{4})[\-_\.\s](\d{4})[\-_\.\s]([123])/);
         if (m) {
           c.semester = `${m[1]}-${m[2]}-${m[3]}`;
         } else {
-          // 尝试 "202420251..." 格式
-          m = xkkh.match(/^(\d{4})(\d{4})([123])/);
+          // 格式2: "202420251..." 或 "(202420251)..."
+          m = xkkh.match(/\b(\d{4})(\d{4})([123])\b/);
           if (m) {
             c.semester = `${m[1]}-${m[2]}-${m[3]}`;
           }
         }
       }
-      // 如果 xkkh 解析失败，尝试常规字段
-      if (c.semester.length === 0) {
-        c.semester = `${pickStr(raw, 'xnm', 'year', 'xn', 'academicYear')}-${pickStr(raw, 'xqm', 'term', 'xq', 'semesterCode')}`;
+      // 如果 xkkh 解析失败，尝试常规字段 xnm/xqm
+      if (c.semester.length === 0 || c.semester === '-') {
+        const xnm = pickStr(raw, 'xnm', 'year', 'xn', 'academicYear');
+        const xqm = pickStr(raw, 'xqm', 'term', 'xq', 'semesterCode');
+        if (xnm.length > 0 && xqm.length > 0) {
+          c.semester = `${xnm}-${xqm}`;
+        }
+      }
+      // 保守兜底：只有当 xkkh 完全不存在且数据量合理（<=30）时才使用 defaultSemesterId
+      // 一个学期通常不超过 30 门课，超过则认为 API 返回了全部历史数据，不应猜测学期
+      // 如果 xkkh 存在但解析失败，也说明数据格式有问题，不应猜测学期
+      const dataSizeOk = items.length <= 30;
+      if ((c.semester.length === 0 || c.semester === '-') && defaultSemesterId && xkkh.length === 0 && dataSizeOk) {
+        c.semester = defaultSemesterId;
+        fallbackCount++;
       }
       // 诊断：打印前3条记录的 xkkh 和解析结果
       if (idx < 3) {
@@ -1493,9 +1506,9 @@ function parseGradesFromJson(json: string): Course[] {
       }
       return c;
     });
-    // 汇总诊断：统计有学期信息的记录数
+    // 汇总诊断：统计有学期信息的记录数和兜底触发次数
     const withSemester = parsedCourses.filter(c => c.semester && c.semester.length > 0 && c.semester !== '-').length;
-    console.info(`[NetworkService] Parsed ${parsedCourses.length} grades, ${withSemester} have semester info`);
+    console.info(`[NetworkService] Parsed ${parsedCourses.length} grades, ${withSemester} have semester info, ${fallbackCount} used defaultSemesterId(${defaultSemesterId})`);
     return parsedCourses;
   } catch (e) {
     console.error(`[NetworkService] parseGradesFromJson error: ${(e as Error).message}`);
@@ -1740,14 +1753,14 @@ interface ExamItem {
   bz?: string;     // 备注，如"弃修无需考试"
 }
 
-function parseExamsFromJson(json: string, semesterId: string, semesterStart?: Date, semesterEnd?: Date): Exam[] {
+function parseExamsFromJson(json: string, semesterId: string, semesterStartMs?: number, semesterEndMs?: number): Exam[] {
   try {
     const data = JSON.parse(json) as ExamsResponse;
     const items = data.items ?? data.rows ?? [];
 
     // 日期范围过滤参数（宽限±30天）
-    const rangeStart = semesterStart ? new Date(semesterStart.getTime() - 30 * 86400000) : null;
-    const rangeEnd = semesterEnd ? new Date(semesterEnd.getTime() + 30 * 86400000) : null;
+    const rangeStart = semesterStartMs !== undefined && !isNaN(semesterStartMs) ? new Date(semesterStartMs - 30 * 86400000) : null;
+    const rangeEnd = semesterEndMs !== undefined && !isNaN(semesterEndMs) ? new Date(semesterEndMs + 30 * 86400000) : null;
 
     const exams: Exam[] = [];
     let filteredCount = 0;

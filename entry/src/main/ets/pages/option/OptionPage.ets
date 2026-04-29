@@ -21,6 +21,7 @@ export struct OptionPage {
   @StorageLink(AppKeys.HIDE_GPA) hideGpa: boolean = false;
   @StorageLink(AppKeys.GPA_CALC_MODE) gpaCalcMode: string = 'highest';
   @StorageLink(AppKeys.THEME_MODE) themeMode: string = 'system';
+  @StorageLink(AppKeys.TAB_BAR_STYLE) tabBarStyle: string = 'glow';
   @StorageLink(AppKeys.WORK_DURATION) workDuration: number = 50;
   @StorageLink(AppKeys.REST_DURATION) restDuration: number = 10;
   @StorageLink(AppKeys.ALLOW_TIMES) allowTimes: TimeRange[] = [];
@@ -405,6 +406,42 @@ export struct OptionPage {
             if (idx === 0) setMode('system');
             else if (idx === 1) setMode('light');
             else if (idx === 2) setMode('dark');
+          }).catch(() => {
+            // ignore
+          });
+        } catch {}
+      })
+
+      this.SepLine()
+
+      Row({ space: 14 }) {
+        this.IconLabel('🧭', '#5AC8FA')
+        Text('底栏样式').fontSize(16).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        Text(this.tabBarStyle === 'pill' ? '胶囊样式' : '沉浸光感')
+          .fontSize(14).fontColor($r('app.color.text_secondary'))
+        Image($r('sys.media.ohos_ic_public_arrow_right'))
+          .width(14).height(14).fillColor($r('app.color.text_tertiary'))
+      }
+      .width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
+      .onClick(() => {
+        const storageService = this.storageService;
+        const setStyle = (style: string) => {
+          AppStorage.set(AppKeys.TAB_BAR_STYLE, style);
+          storageService?.saveTabBarStyle(style);
+        };
+        try {
+          this.getUIContext().getPromptAction().showDialog({
+            title: '底栏样式',
+            message: '请选择底部导航栏的样式',
+            buttons: [
+              { text: '沉浸光感', color: $r('app.color.text_primary') },
+              { text: '胶囊样式', color: $r('app.color.text_primary') }
+            ]
+          }).then((result) => {
+            if (!result) return;
+            const idx = (result as promptAction.ShowDialogSuccessResponse).index;
+            if (idx === 0) setStyle('glow');
+            else if (idx === 1) setStyle('pill');
           }).catch(() => {
             // ignore
           });
