@@ -113,19 +113,19 @@ struct Index {
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
 
-  // 胶囊样式底栏拖拽状态
-  @State pillTabDragOffset: number = 0;
+  // 胶囊样式底栏交互状态(切 tab 时方向喷射粒子)
   @State pillTabMotionDirection: number = 0; // -1=向左 0=静止 1=向右
-  @State pillTabPressed: boolean = false;
-  @State pillContainerWidth: number = 360;
 
   private storageService: StorageService | null = null;
   private tabController: TabsController = new TabsController();
   private hdsTabController: HdsTabsController = new HdsTabsController();
   private refreshTimer: number = -1;
-  private pillDragMotionTimer: number = -1;
-  private readonly pillSidePadding: number = 16; // 左右内边距
   private readonly tabCount: number = 5;
+  // 胶囊底栏几何常量
+  private readonly iconOnlyCellWidth: number = 56;
+  private readonly expandedCellWidth: number = 130;
+  private readonly pillBarHeight: number = 60;
+  private readonly pillIndicatorHeight: number = 54;
 
   /** 初始化 AppStorage 默认值 */
   private initAppStorage(): void {
@@ -370,24 +370,43 @@ struct Index {
 
   // ======= 胶囊样式底栏 - 辅助方法 =======
 
-  private getPillTabEmoji(index: number): string {
-    const emojis = ['⏰', '📅', '📝', '🎓', '⚙️'];
-    return emojis[index] ?? '⏰';
+  /** 系统符号图标(与 GlowTabsBody 共用一套) */
+  private getTabSymbolResource(index: number): Resource {
+    const icons: Resource[] = [
+      $r('sys.symbol.alarm_fill_1'),
+      $r('sys.symbol.worldclock_fill_2'),
+      $r('sys.symbol.stopwatch_2'),
+      $r('sys.symbol.square_and_pencil'),
+      $r('sys.symbol.star')
+    ];
+    return icons[index] ?? icons[0];
   }
 
-  /** 单个 tab 单元格宽度（按容器宽度均分 5 份） */
-  private pillCellWidth(): number {
-    const inner = this.pillContainerWidth - this.pillSidePadding * 2;
-    if (inner <= 0) return 64;
-    return inner / this.tabCount;
+  /** 第 i 个 cell 的宽度(选中态展开,其余收缩为图标条) */
+  private cellWidth(i: number): number {
+    return i === this.currentIndex ? this.expandedCellWidth : this.iconOnlyCellWidth;
   }
 
-  /** 指示器在 Stack 内的水平偏移量（保留 2px 内边距，叠加拖拽偏移） */
+  /** 第 i 个 cell 的左边缘 x(累加前面 cell 的宽度) */
+  private cellLeftEdge(i: number): number {
+    let x = 0;
+    for (let k = 0; k < i; k++) {
+      x += this.cellWidth(k);
+    }
+    return x;
+  }
+
+  /** 指示器相对内层 Stack 的水平偏移(2px 内嵌) */
   private pillIndicatorOffsetX(): number {
-    return 2 + this.currentIndex * this.pillCellWidth() + this.pillTabDragOffset;
+    return 2 + this.cellLeftEdge(this.currentIndex);
   }
 
-  /** 切换到指定 tab：动画 currentIndex 与 dragOffset，保持 Tabs 内容同步 */
+  /** 整条胶囊底栏的总宽度(恒定:1 个展开 cell + 其余 icon-only cell) */
+  private totalPillBarWidth(): number {
+    return this.expandedCellWidth + this.iconOnlyCellWidth * (this.tabCount - 1);
+  }
+
+  /** 切换到指定 tab:动画 currentIndex,保持 Tabs 内容同步 */
   private snapToTab(idx: number): void {
     const target = Math.max(0, Math.min(this.tabCount - 1, idx));
     const isSame = target === this.currentIndex;
@@ -396,8 +415,6 @@ struct Index {
       this.pillTabMotionDirection = 1;
     } else if (target < this.currentIndex) {
       this.pillTabMotionDirection = -1;
-    } else if (Math.abs(this.pillTabDragOffset) > 0.5) {
-      this.pillTabMotionDirection = this.pillTabDragOffset > 0 ? -1 : 1;
     } else {
       this.pillTabMotionDirection = 0;
     }
@@ -411,11 +428,9 @@ struct Index {
         }
       }, () => {
         this.currentIndex = target;
-        this.pillTabDragOffset = 0;
       });
     } catch {
       this.currentIndex = target;
-      this.pillTabDragOffset = 0;
       this.pillTabMotionDirection = 0;
     }
 
@@ -512,262 +527,187 @@ struct Index {
 
   // ======= 胶囊样式底栏 =======
   /**
-   * 4 层 Stack 结构（与 SemesterSelector 一致）：
-   * 1) 底层胶囊背景
-   * 2) 指示器（主题色 + 粒子）：可拖拽，使指示器跟手滑动
-   * 3) 灰色文字+图标层：始终位于胶囊原位，承接点击切换
-   * 4) 白色文字+图标层：裁剪到指示器范围内
+   * 胶囊样式底栏:
+   * - 毛玻璃材质背景胶囊(自动适配深浅色)
+   * - 蓝色指示器:尺寸=展开 cell 宽,offsetX 跟随 currentIndex,与各 cell 的宽度变化在同一段缓动里同步
+   * - 5 个 cell:点击切换;选中态横向展开为图标+文字,其余仅图标
    */
   @Builder
   PillTabBar() {
-    Stack({ alignContent: Alignment.Start }) {
-      // 1. 底层胶囊背景
-      Row()
-        .width(this.tabCount * this.pillCellWidth())
-        .height(60)
-        .borderRadius(30)
-        .backgroundColor($r('app.color.tile_bg'))
-        .border({ width: 0.5, color: '#10000000' })
-        .shadow({
-          radius: 16,
-          color: '#1A000000',
-          offsetX: 0,
-          offsetY: 6
-        })
-
-      // 2. 指示器
-      Stack() {
+    Stack({ alignContent: Alignment.Center }) {
+      Stack({ alignContent: Alignment.Start }) {
+        // 1. 毛玻璃背景胶囊
         Row()
-          .width('100%')
-          .height('100%')
-          .backgroundColor($r('app.color.color_blue'))
+          .width(this.totalPillBarWidth())
+          .height(this.pillBarHeight)
+          .borderRadius(this.pillBarHeight / 2)
+          .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
+          .border({ width: 0.5, color: '#10000000' })
+          .shadow({
+            radius: 16,
+            color: '#1A000000',
+            offsetX: 0,
+            offsetY: 6
+          })
 
-        // 粒子层（按下时小范围闪烁，滑动时按方向喷射）
-        Particle({
-          particles: [
-            {
-              // 0 号：环境闪烁
-              emitter: {
-                particle: {
-                  type: ParticleType.POINT,
-                  config: { radius: 1.0 },
-                  count: -1,
-                  lifetime: 800,
-                  lifetimeRange: 200
+        // 2. 蓝色指示器(滑动+变宽到选中 cell)
+        Stack() {
+          Row()
+            .width('100%')
+            .height('100%')
+            .backgroundColor($r('app.color.color_blue'))
+
+          // 粒子层(切 tab 时按方向喷射)
+          Particle({
+            particles: [
+              {
+                // 0 号:环境闪烁
+                emitter: {
+                  particle: {
+                    type: ParticleType.POINT,
+                    config: { radius: 1.0 },
+                    count: -1,
+                    lifetime: 800,
+                    lifetimeRange: 200
+                  },
+                  emitRate: 0,
+                  shape: ParticleEmitterShape.RECTANGLE,
+                  position: [0, 0],
+                  size: ['100%', '100%']
                 },
-                emitRate: 0,
-                shape: ParticleEmitterShape.RECTANGLE,
-                position: [0, 0],
-                size: ['100%', '100%']
-              },
-              color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
-              opacity: {
-                range: [0.0, 1.0],
-                updater: {
-                  type: ParticleUpdater.CURVE,
-                  config: [
-                    { from: 0.0, to: 1.0, startMillis: 0, endMillis: 200 },
-                    { from: 1.0, to: 0.0, startMillis: 200, endMillis: 800 }
-                  ]
-                }
-              },
-              scale: { range: [0.4, 1.4] },
-              velocity: { speed: [3, 10], angle: [0, 360] }
-            },
-            {
-              // 1 号：向右喷射
-              emitter: {
-                particle: {
-                  type: ParticleType.POINT,
-                  config: { radius: 1.3 },
-                  count: -1,
-                  lifetime: 500,
-                  lifetimeRange: 200
+                color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
+                opacity: {
+                  range: [0.0, 1.0],
+                  updater: {
+                    type: ParticleUpdater.CURVE,
+                    config: [
+                      { from: 0.0, to: 1.0, startMillis: 0, endMillis: 200 },
+                      { from: 1.0, to: 0.0, startMillis: 200, endMillis: 800 }
+                    ]
+                  }
                 },
-                emitRate: 0,
-                shape: ParticleEmitterShape.RECTANGLE,
-                position: [0, 0],
-                size: ['100%', '100%']
+                scale: { range: [0.4, 1.4] },
+                velocity: { speed: [3, 10], angle: [0, 360] }
               },
-              color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
-              opacity: {
-                range: [0.0, 1.0],
-                updater: {
-                  type: ParticleUpdater.CURVE,
-                  config: [
-                    { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
-                    { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
-                  ]
-                }
-              },
-              scale: { range: [0.4, 1.6] },
-              velocity: { speed: [60, 120], angle: [-25, 25] }
-            },
-            {
-              // 2 号：向左喷射
-              emitter: {
-                particle: {
-                  type: ParticleType.POINT,
-                  config: { radius: 1.3 },
-                  count: -1,
-                  lifetime: 500,
-                  lifetimeRange: 200
+              {
+                // 1 号:向右喷射
+                emitter: {
+                  particle: {
+                    type: ParticleType.POINT,
+                    config: { radius: 1.3 },
+                    count: -1,
+                    lifetime: 500,
+                    lifetimeRange: 200
+                  },
+                  emitRate: 0,
+                  shape: ParticleEmitterShape.RECTANGLE,
+                  position: [0, 0],
+                  size: ['100%', '100%']
                 },
-                emitRate: 0,
-                shape: ParticleEmitterShape.RECTANGLE,
-                position: [0, 0],
-                size: ['100%', '100%']
+                color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
+                opacity: {
+                  range: [0.0, 1.0],
+                  updater: {
+                    type: ParticleUpdater.CURVE,
+                    config: [
+                      { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
+                      { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
+                    ]
+                  }
+                },
+                scale: { range: [0.4, 1.6] },
+                velocity: { speed: [60, 120], angle: [-25, 25] }
               },
-              color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
-              opacity: {
-                range: [0.0, 1.0],
-                updater: {
-                  type: ParticleUpdater.CURVE,
-                  config: [
-                    { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
-                    { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
-                  ]
-                }
-              },
-              scale: { range: [0.4, 1.6] },
-              velocity: { speed: [60, 120], angle: [155, 205] }
-            }
-          ]
-        })
-          .width('100%')
-          .height('100%')
-          .hitTestBehavior(HitTestMode.None)
-          .emitter([
-            { index: 0, emitRate: (this.pillTabPressed && this.pillTabMotionDirection === 0) ? 25 : 0 },
-            { index: 1, emitRate: this.pillTabMotionDirection > 0 ? 80 : 0 },
-            { index: 2, emitRate: this.pillTabMotionDirection < 0 ? 80 : 0 }
-          ])
-      }
-      .width(this.pillCellWidth() - 4)
-      .height(54)
-      .borderRadius(27)
-      .clip(true)
-      .shadow({
-        radius: 10,
-        color: '#40007AFF',
-        offsetX: 0,
-        offsetY: 4
-      })
-      .offset({ x: this.pillIndicatorOffsetX(), y: 0 })
-      .onTouch((event: TouchEvent) => {
-        const t = event.type;
-        if (t === TouchType.Down) {
-          this.pillTabPressed = true;
-        } else if (t === TouchType.Up || t === TouchType.Cancel) {
-          this.pillTabPressed = false;
-          if (this.pillDragMotionTimer !== -1) {
-            clearTimeout(this.pillDragMotionTimer);
-            this.pillDragMotionTimer = -1;
-          }
-        }
-      })
-      .gesture(
-        PanGesture({ direction: PanDirection.Horizontal, distance: 5 })
-          .onActionUpdate((event: GestureEvent) => {
-            const cellW = this.pillCellWidth();
-            const minOffset = -this.currentIndex * cellW;
-            const maxOffset = (this.tabCount - 1 - this.currentIndex) * cellW;
-            const clamped = Math.max(minOffset, Math.min(maxOffset, event.offsetX));
-            const delta = clamped - this.pillTabDragOffset;
-            this.pillTabDragOffset = clamped;
-            if (Math.abs(delta) >= 0.5) {
-              this.pillTabMotionDirection = delta > 0 ? 1 : -1;
-              if (this.pillDragMotionTimer !== -1) {
-                clearTimeout(this.pillDragMotionTimer);
+              {
+                // 2 号:向左喷射
+                emitter: {
+                  particle: {
+                    type: ParticleType.POINT,
+                    config: { radius: 1.3 },
+                    count: -1,
+                    lifetime: 500,
+                    lifetimeRange: 200
+                  },
+                  emitRate: 0,
+                  shape: ParticleEmitterShape.RECTANGLE,
+                  position: [0, 0],
+                  size: ['100%', '100%']
+                },
+                color: { range: ['#FFFFFFFF', '#FFFFFFFF'] },
+                opacity: {
+                  range: [0.0, 1.0],
+                  updater: {
+                    type: ParticleUpdater.CURVE,
+                    config: [
+                      { from: 0.0, to: 1.0, startMillis: 0, endMillis: 100 },
+                      { from: 1.0, to: 0.0, startMillis: 100, endMillis: 500 }
+                    ]
+                  }
+                },
+                scale: { range: [0.4, 1.6] },
+                velocity: { speed: [60, 120], angle: [155, 205] }
               }
-              this.pillDragMotionTimer = setTimeout(() => {
-                this.pillTabMotionDirection = 0;
-                this.pillDragMotionTimer = -1;
-              }, 100);
-            }
+            ]
           })
-          .onActionEnd(() => {
-            if (this.pillDragMotionTimer !== -1) {
-              clearTimeout(this.pillDragMotionTimer);
-              this.pillDragMotionTimer = -1;
-            }
-            const cellW = this.pillCellWidth();
-            const continuous = this.currentIndex + this.pillTabDragOffset / cellW;
-            const target = Math.max(0, Math.min(this.tabCount - 1, Math.round(continuous)));
-            this.snapToTab(target);
-          })
-          .onActionCancel(() => {
-            if (this.pillDragMotionTimer !== -1) {
-              clearTimeout(this.pillDragMotionTimer);
-              this.pillDragMotionTimer = -1;
-            }
-            this.snapToTab(this.currentIndex);
-          })
-      )
+            .width('100%')
+            .height('100%')
+            .hitTestBehavior(HitTestMode.None)
+            .emitter([
+              { index: 0, emitRate: 0 },
+              { index: 1, emitRate: this.pillTabMotionDirection > 0 ? 80 : 0 },
+              { index: 2, emitRate: this.pillTabMotionDirection < 0 ? 80 : 0 }
+            ])
+        }
+        .width(this.expandedCellWidth - 4)
+        .height(this.pillIndicatorHeight)
+        .borderRadius(this.pillIndicatorHeight / 2)
+        .clip(true)
+        .shadow({
+          radius: 10,
+          color: '#40007AFF',
+          offsetX: 0,
+          offsetY: 4
+        })
+        .offset({ x: this.pillIndicatorOffsetX(), y: 0 })
+        .hitTestBehavior(HitTestMode.None)
 
-      // 3. 灰色 cell 层（始终位于胶囊原位，承接点击切换）
-      Row() {
-        ForEach([0, 1, 2, 3, 4], (i: number) => {
-          Column({ space: 2 }) {
-            Text(this.getPillTabEmoji(i))
-              .fontSize(22)
-              .opacity(0.45)
-            Text(this.getTabLabel(i))
-              .fontSize(10)
-              .fontColor($r('app.color.text_secondary'))
-              .fontWeight(FontWeight.Medium)
-              .maxLines(1)
-          }
-          .width(this.pillCellWidth())
-          .height(60)
-          .justifyContent(FlexAlign.Center)
-          .onClick(() => this.snapToTab(i))
-          .hitTestBehavior(HitTestMode.Transparent)
-        }, (i: number) => `pill-gray-${i}`)
-      }
-      .height(60)
-      .hitTestBehavior(HitTestMode.Transparent)
-
-      // 4. 白色 cell 层（裁剪到指示器范围内）
-      Row() {
+        // 3. Cell 层:点击切换 + 选中态横向展开显示文字
         Row() {
           ForEach([0, 1, 2, 3, 4], (i: number) => {
-            Column({ space: 2 }) {
-              Text(this.getPillTabEmoji(i))
+            Row({ space: 6 }) {
+              SymbolGlyph(this.getTabSymbolResource(i))
                 .fontSize(22)
-                .opacity(1.0)
-              Text(this.getTabLabel(i))
-                .fontSize(10)
-                .fontColor(Color.White)
+                .fontColor(i === this.currentIndex ? [Color.White] : ['#8E8E93'])
                 .fontWeight(FontWeight.Medium)
-                .maxLines(1)
+
+              if (i === this.currentIndex) {
+                Text(this.getTabLabel(i))
+                  .fontSize(14)
+                  .fontColor(Color.White)
+                  .fontWeight(FontWeight.Medium)
+                  .maxLines(1)
+                  .transition(
+                    TransitionEffect.OPACITY
+                      .combine(TransitionEffect.translate({ x: -8, y: 0 }))
+                      .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+                  )
+              }
             }
-            .width(this.pillCellWidth())
-            .height(60)
+            .width(this.cellWidth(i))
+            .height(this.pillBarHeight)
             .justifyContent(FlexAlign.Center)
-            .hitTestBehavior(HitTestMode.None)
-          }, (i: number) => `pill-white-${i}`)
+            .onClick(() => this.snapToTab(i))
+            .hitTestBehavior(HitTestMode.Transparent)
+          }, (i: number) => `pill-cell-${i}`)
         }
-        .height(60)
-        .offset({ x: -this.pillIndicatorOffsetX(), y: 0 })
-        .hitTestBehavior(HitTestMode.None)
+        .height(this.pillBarHeight)
+        .hitTestBehavior(HitTestMode.Transparent)
       }
-      .width(this.pillCellWidth() - 4)
-      .height(54)
-      .borderRadius(27)
-      .clip(true)
-      .offset({ x: this.pillIndicatorOffsetX(), y: 0 })
-      .hitTestBehavior(HitTestMode.None)
+      .width(this.totalPillBarWidth())
+      .height(this.pillBarHeight)
     }
-    .height(60)
-    .padding({ left: this.pillSidePadding, right: this.pillSidePadding })
+    .height(this.pillBarHeight)
     .width('100%')
-    .onAreaChange((_oldArea: Area, newArea: Area) => {
-      const w = newArea.width as number;
-      if (w > 0 && Math.abs(w - this.pillContainerWidth) > 0.5) {
-        this.pillContainerWidth = w;
-      }
-    })
   }
 
   build() {

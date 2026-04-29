@@ -47,7 +47,7 @@ export struct ScholarPage {
   @StorageLink(AppKeys.LAST_UPDATE) lastUpdate: number = 0;
   @StorageLink(AppKeys.STUDENT_INFO) studentInfoStr: string = '';
   @StorageLink(AppKeys.USERNAME) username: string = '';
-  @StorageLink(AppKeys.CURRENT_SEMESTER_INDEX) semesterIndex: number = 0;
+  @StorageLink(AppKeys.CURRENT_SEMESTER_INDEX) @Watch('onSemesterIndexChanged') semesterIndex: number = 0;
   @State isRefreshing: boolean = false;
   @State errorMessage: string = '';
   @State updateTimeLabel: string = '';
@@ -55,7 +55,20 @@ export struct ScholarPage {
   @State currentSemesterDataLoaded: boolean = false;
   @State hasAnyData: boolean = false;
   @State _currentSemester: Semester | null = null;
-  @State safeGpaInfoValue: GpaInfo = new GpaInfo();
+  // GPA 显示字段拆分为独立的 @State，避免 ArkTS 对复杂对象响应式追踪不可靠
+  @State gpaFivePoint: number = 0;
+  @State gpaFourThree: number = 0;
+  @State gpaRawFourPoint: number = 0;
+  @State gpaPercentage: number = 0;
+  @State gpaTotalCredits: number = 0;
+  @State gpaYearCredits: number = 0;
+  @State gpaYearGpa: number = 0;
+  @State gpaMajorCredits: number = 0;
+  @State gpaMajorGpa: number = 0;
+  @State gpaMajorFourGpa: number = 0;
+  @State gpaSecondCredit: number = 0;
+  @State gpaThirdCredit: number = 0;
+  @State gpaFourthCredit: number = 0;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('bottomRectHeight') bottomRectHeight: number = 0;
   private storageService: StorageService | null = null;
@@ -158,7 +171,7 @@ export struct ScholarPage {
     const idx = Math.min(Math.max(0, this.semesterIndex), sems.length - 1);
     this._currentSemester = sems[idx] ?? null;
     this.updateSafeGpaInfo();
-    console.info(`[ScholarPage] syncCurrentSemester: idx=${idx}, id=${this._currentSemester?.id ?? 'null'}, courses=${this._currentSemester?.courses?.length ?? 0}, gpa=${this.safeGpaInfoValue.fivePointGpa}`);
+    console.info(`[ScholarPage] syncCurrentSemester: idx=${idx}, id=${this._currentSemester?.id ?? 'null'}, courses=${this._currentSemester?.courses?.length ?? 0}, gpa=${this.gpaFivePoint}`);
   }
 
   /** 解析出学期所属学年（如 "2025-2026"），用于紧凑模式分组 */
@@ -280,6 +293,35 @@ export struct ScholarPage {
     return [firstSemIdx, count, selectedJ];
   }
 
+  /** 紧凑模式下展开年份在容器内的左偏移（first semester 单元格的起始 X） */
+  private expandedGroupOffsetX(): number {
+    if (!this.isCompactMode()) return 0;
+    const cells = this.displayCells();
+    let x = 0;
+    for (const c of cells) {
+      if (c.type === 'semester') return x;
+      x += c.width;
+    }
+    return 0;
+  }
+
+  /** 紧凑模式下展开年份的连续学期格数量（决定阴影框宽度） */
+  private expandedGroupCount(): number {
+    if (!this.isCompactMode()) return 0;
+    const cells = this.displayCells();
+    let count = 0;
+    let started = false;
+    for (const c of cells) {
+      if (c.type === 'semester') {
+        started = true;
+        count++;
+      } else if (started) {
+        break;
+      }
+    }
+    return count;
+  }
+
   /** 学期选择指示器在容器内的左偏移（含 2px 内边距）。在拖拽过程中跟手位移。 */
   private indicatorOffsetX(): number {
     const cells = this.displayCells() ?? [];
@@ -328,8 +370,9 @@ export struct ScholarPage {
       this.semesterDragOffset = 0;
       this.motionDirection = 0;
     }
+    // syncCurrentSemester 由 @Watch('onSemesterIndexChanged') 自动调用，
+    // 确保 semesterIndex 真正更新后才同步 GPA，避免时序错乱
     if (changed) {
-      this.syncCurrentSemester();
       this.onSemesterChanged();
     }
   }
@@ -367,25 +410,37 @@ export struct ScholarPage {
     return best ?? sems[sems.length - 1] ?? null;
   }
 
-  /** 更新 safeGpaInfoValue（在 syncCurrentSemester 中调用） */
+  /** 更新 GPA 显示字段（在 syncCurrentSemester 中调用） */
   private updateSafeGpaInfo(): void {
     const sem = this._currentSemester;
     if (sem !== null && sem !== undefined && sem.gpaInfo !== undefined && sem.gpaInfo !== null) {
-      // 深拷贝：避免 safeGpaInfoValue 和 sem.gpaInfo 共享引用
-      const gpa = new GpaInfo();
-      gpa.fivePointGpa = sem.gpaInfo.fivePointGpa;
-      gpa.fourThreeGpa = sem.gpaInfo.fourThreeGpa;
-      gpa.rawFourPointGpa = sem.gpaInfo.rawFourPointGpa;
-      gpa.percentageGpa = sem.gpaInfo.percentageGpa;
-      gpa.totalCredits = sem.gpaInfo.totalCredits;
-      gpa.yearCredits = sem.gpaInfo.yearCredits;
-      gpa.yearGpa = sem.gpaInfo.yearGpa;
-      gpa.majorCredits = sem.gpaInfo.majorCredits;
-      gpa.majorGpa = sem.gpaInfo.majorGpa;
-      gpa.majorFourGpa = sem.gpaInfo.majorFourGpa;
-      this.safeGpaInfoValue = gpa;
+      this.gpaFivePoint = sem.gpaInfo.fivePointGpa;
+      this.gpaFourThree = sem.gpaInfo.fourThreeGpa;
+      this.gpaRawFourPoint = sem.gpaInfo.rawFourPointGpa;
+      this.gpaPercentage = sem.gpaInfo.percentageGpa;
+      this.gpaTotalCredits = sem.gpaInfo.totalCredits;
+      this.gpaYearCredits = sem.gpaInfo.yearCredits;
+      this.gpaYearGpa = sem.gpaInfo.yearGpa;
+      this.gpaMajorCredits = sem.gpaInfo.majorCredits;
+      this.gpaMajorGpa = sem.gpaInfo.majorGpa;
+      this.gpaMajorFourGpa = sem.gpaInfo.majorFourGpa;
+      this.gpaSecondCredit = sem.gpaInfo.secondCredit;
+      this.gpaThirdCredit = sem.gpaInfo.thirdCredit;
+      this.gpaFourthCredit = sem.gpaInfo.fourthCredit;
     } else {
-      this.safeGpaInfoValue = new GpaInfo();
+      this.gpaFivePoint = 0;
+      this.gpaFourThree = 0;
+      this.gpaRawFourPoint = 0;
+      this.gpaPercentage = 0;
+      this.gpaTotalCredits = 0;
+      this.gpaYearCredits = 0;
+      this.gpaYearGpa = 0;
+      this.gpaMajorCredits = 0;
+      this.gpaMajorGpa = 0;
+      this.gpaMajorFourGpa = 0;
+      this.gpaSecondCredit = 0;
+      this.gpaThirdCredit = 0;
+      this.gpaFourthCredit = 0;
     }
   }
 
@@ -964,11 +1019,29 @@ export struct ScholarPage {
           .backgroundColor($r('app.color.tile_bg'))
           .border({ width: 0.5, color: '#10000000' })
           .shadow({
-            radius: 6,
-            color: '#14000000',
+            radius: 8,
+            color: '#1F000000',
             offsetX: 0,
-            offsetY: 2
+            offsetY: 3
           })
+
+        // 1.5 展开年份组的边缘阴影框（仅紧凑模式下渲染，用于区分父子层级）
+        if (this.expandedGroupCount() > 0) {
+          Row()
+            .width(this.expandedGroupCount() * this.semesterCellWidth - 4)
+            .height(40)
+            .borderRadius(20)
+            .backgroundColor('#4DFFFFFF')
+            .border({ width: 0.3, color: $r('app.color.separator') })
+            .shadow({
+              radius: 18,
+              color: $r('app.color.shadow_color'),
+              offsetX: 0,
+              offsetY: 6
+            })
+            .offset({ x: this.expandedGroupOffsetX() + 2, y: 0 })
+            .hitTestBehavior(HitTestMode.None)
+        }
 
         // 2. 指示器：主题色小胶囊（仅背景，位于文字后面），可拖拽
         if ((this.semesters ?? []).length > 0) {
@@ -1106,10 +1179,10 @@ export struct ScholarPage {
             .borderRadius(19)
             .clip(true)
             .shadow({
-              radius: 10,
+              radius: 12,
               color: '#40007AFF',
               offsetX: 0,
-              offsetY: 4
+              offsetY: 5
             })
             .offset({ x: this.indicatorOffsetX(), y: 0 })
             .onTouch((event: TouchEvent) => {
@@ -1275,13 +1348,13 @@ export struct ScholarPage {
         Column({ space: 0 }) {
           // 统计行（与 CourseModule 的 StatCard 样式一致）
           Row() {
-            this.StatCard('五分制GPA', this.formatGpa(this.safeGpaInfoValue.fivePointGpa), () => {
+            this.StatCard('五分制GPA', this.formatGpa(this.gpaFivePoint), () => {
               this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
             })
-            this.StatCard('获得学分', this.formatCredits(this.safeGpaInfoValue.totalCredits), () => {
+            this.StatCard('获得学分', this.formatCredits(this.gpaTotalCredits), () => {
               this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
             })
-            this.StatCard('百分制', this.formatGpa(this.safeGpaInfoValue.percentageGpa), () => {
+            this.StatCard('百分制', this.formatGpa(this.gpaPercentage), () => {
               this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
             })
           }
@@ -1289,13 +1362,13 @@ export struct ScholarPage {
           .padding({ left: 12, right: 12, top: 12, bottom: 8 })
 
           Row() {
-            this.StatCard('四分制GPA', this.formatGpa(this.safeGpaInfoValue.fourThreeGpa), () => {
+            this.StatCard('四分制GPA', this.formatGpa(this.gpaFourThree), () => {
               this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
             })
-            this.StatCard('主修均绩', this.formatGpa(this.safeGpaInfoValue.majorGpa), () => {
+            this.StatCard('主修均绩', this.formatGpa(this.gpaMajorGpa), () => {
               this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
             })
-            this.StatCard('主修学分', this.formatCredits(this.safeGpaInfoValue.majorCredits), () => {
+            this.StatCard('主修学分', this.formatCredits(this.gpaMajorCredits), () => {
               this.navStack.pushPathByName('GradeDetail', this.getGradeDetailNavParam());
             })
           }
@@ -1387,7 +1460,7 @@ export struct ScholarPage {
             this.StatCard('📖 课程', this._currentSemester.courses.length.toString(), () => {
               this.navStack.pushPathByName('CourseList', this.getCourseListNavParam());
             })
-            this.StatCard('📊 学分', this.safeGpaInfoValue.totalCredits.toFixed(1), () => {})
+            this.StatCard('📊 学分', this.gpaTotalCredits.toFixed(1), () => {})
             this.StatCard('📝 考试', this._currentSemester.exams.length.toString(), () => {
               this.navStack.pushPathByName('ExamList', this.getExamListNavParam());
             })
@@ -1694,9 +1767,9 @@ export struct ScholarPage {
         title: '🔬 实践学分'
       }) {
         Row() {
-          this.StatCard('🏃 二课', this.safeGpaInfoValue.secondCredit.toFixed(1), () => {})
-          this.StatCard('🌿 三课', this.safeGpaInfoValue.thirdCredit.toFixed(1), () => {})
-          this.StatCard('🔬 四课', this.safeGpaInfoValue.fourthCredit.toFixed(1), () => {})
+          this.StatCard('🏃 二课', this.gpaSecondCredit.toFixed(1), () => {})
+          this.StatCard('🌿 三课', this.gpaThirdCredit.toFixed(1), () => {})
+          this.StatCard('🔬 四课', this.gpaFourthCredit.toFixed(1), () => {})
         }
         .padding({ left: 12, right: 12, top: 12, bottom: 12 })
       }
@@ -2001,6 +2074,11 @@ export struct ScholarPage {
       }
     }
     // 无论索引是否变化，都同步当前学期（@StorageLink 数据可能已更新）
+    this.syncCurrentSemester();
+  }
+
+  private onSemesterIndexChanged(): void {
+    console.info(`[ScholarPage] semesterIndex changed to ${this.semesterIndex}, syncing...`);
     this.syncCurrentSemester();
   }
 
